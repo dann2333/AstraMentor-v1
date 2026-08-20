@@ -26,6 +26,15 @@ class NodeAttributes(BaseModel):
     )
     description: str = Field(default="", description="知识点描述（AI生成）")
     user_note: str = Field(default="", description="用户个性化备注")
+    # NOTE: 以下两个字段仅在文档模式下使用，主题模式下为空
+    source_chunks: list[str] = Field(
+        default_factory=list,
+        description="关联的原文分块 ID 列表（仅文档模式使用）",
+    )
+    source_text: str = Field(
+        default="",
+        description="节点对应的原文摘要（仅文档模式使用）",
+    )
     last_updated: Optional[str] = Field(
         default_factory=lambda: datetime.now().strftime("%Y-%m-%d"),
         description="最后更新时间",
@@ -75,4 +84,15 @@ class KnowledgeGraph(BaseModel):
     nodes: list[KnowledgeNode] = Field(default_factory=list, description="知识节点列表")
     links: list[KnowledgeLink] = Field(
         default_factory=list, description="知识依赖关系列表"
+    )
+
+
+class ExpandGraphResult(BaseModel):
+    """图谱扩展结果：仅包含新增的节点和连接"""
+
+    new_nodes: list[KnowledgeNode] = Field(
+        default_factory=list, description="新增知识节点列表（含中间过渡节点和目标节点）"
+    )
+    new_links: list[KnowledgeLink] = Field(
+        default_factory=list, description="新增知识依赖关系列表（连接新旧节点）"
     )

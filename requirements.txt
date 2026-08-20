@@ -1,8 +1,10 @@
-# AstraMentor 双Agent教学系统依赖
+﻿# AstraMentor 多 Agent 教学系统依赖
 
 # Google Generative AI SDK
-# the lastest sdk
 google-genai>=0.5.0
+
+# OpenAI 兼容 SDK（用于智谱 GLM、通义千问 Qwen 等 OpenAI 兼容接口）
+openai>=1.30.0
 
 # 环境变量管理
 python-dotenv>=1.0.0
@@ -10,8 +12,29 @@ python-dotenv>=1.0.0
 # 数据验证
 pydantic>=2.0.0
 
-# JSON处理
+# JSON 处理
 orjson>=3.9.0
 
 # 测试框架
 pytest>=7.0.0
+
+# Web Backend
+fastapi>=0.100.0
+uvicorn>=0.23.0
+python-multipart>=0.0.6
+
+# Graph Generation
+networkx>=3.0
+
+# Development
+watchfiles>=0.21.0
+
+# Web Research（联网搜索，通过 DuckDuckGo 实现）
+ddgs>=9.0.0
+
+# PDF 解析
+PyMuPDF>=1.24.0
+
+# 课程知识库（course.yaml 与中文 BM25 分词）
+PyYAML>=6.0.0
+jieba>=0.42.1
