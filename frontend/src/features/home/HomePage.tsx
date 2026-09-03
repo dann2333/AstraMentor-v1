@@ -1,3 +1,4 @@
+import type { ReactNode } from 'react';
 import { ArrowRight, FileUp, Sparkles, History, Play, Trash2 } from 'lucide-react';
 import type { Course, CourseIndexRecovery } from '../../types';
 import type { GraphSession } from '../sidebar/HistorySidebar';
@@ -5,6 +6,8 @@ import { CourseCatalog } from '../courses/CourseCatalog';
 import StarBackground from './StarBackground';
 
 interface HomePageProps {
+  /** 头部右上角的账号入口，由 App 注入以复用同一份登录状态。 */
+  accountMenu?: ReactNode;
   onStart: () => void;
   onUploadDoc?: () => void;
   onSelectCourse: (course: Course) => Promise<void>;
@@ -16,6 +19,7 @@ interface HomePageProps {
 }
 
 export default function HomePage({
+  accountMenu,
   onStart,
   onUploadDoc,
   onSelectCourse,
@@ -33,7 +37,10 @@ export default function HomePage({
           <img src="/logo.png" alt="AstraMentor" />
           <div><strong>ASTRAMENTOR</strong><span>职业教育智能学习星图</span></div>
         </div>
-        <div className="astra-home__status"><i /> LOCAL RAG READY</div>
+        <div className="astra-home__actions-top">
+          {accountMenu}
+          <div className="astra-home__status"><i /> LOCAL RAG READY</div>
+        </div>
       </header>
 
       <main className="astra-home__main">

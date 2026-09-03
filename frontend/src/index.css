@@ -131,6 +131,7 @@ button:active:not(:disabled) { transform: translate(2px, 2px); }
 .astra-brand img { width: 48px; height: 48px; object-fit: contain; image-rendering: pixelated; }
 .astra-brand strong { display: block; color: #ffd166; letter-spacing: .12em; font-size: 17px; }
 .astra-brand span { display: block; margin-top: 4px; color: #a99dbb; font-size: 10px; }
+.astra-home__actions-top { display: flex; align-items: center; gap: 12px; }
 .astra-home__status { display: flex; align-items: center; gap: 8px; padding: 7px 10px; border: 1px solid #67567f; background: #211a38; color: #b9aecc; box-shadow: 3px 3px 0 #080711; font-size: 9px; }
 .astra-home__status i { width: 7px; height: 7px; background: #66d19e; box-shadow: 0 0 8px #66d19e; }
 .astra-home__main { max-width: 1480px; margin: 0 auto; padding: 64px 28px 72px; display: grid; grid-template-columns: minmax(0, 1fr) 292px; gap: 28px; align-items: start; }

@@ -1,4 +1,4 @@
-import { API_BASE_URL } from './client';
+import { API_BASE_URL, authorizationHeader } from './client';
 import { ApiRequestError } from './errors';
 
 export type StreamEventName =
@@ -25,7 +25,12 @@ export async function streamLearning(
 ): Promise<void> {
   const response = await fetch(`${API_BASE_URL}${endpoint}`, {
     method: 'POST',
-    headers: { 'Content-Type': 'application/json', Accept: 'text/event-stream' },
+    headers: {
+      'Content-Type': 'application/json',
+      Accept: 'text/event-stream',
+      // SSE 走的是 fetch，绕开了 axios 拦截器，令牌必须在这里手动带上。
+      ...authorizationHeader(),
+    },
     body: JSON.stringify(body),
     signal,
   });

@@ -18,6 +18,10 @@ import { Card, CardContent, CardHeader, CardTitle } from './components/ui/card';
 import { ResizableHandle, ResizablePanel, ResizablePanelGroup } from "./components/ui/resizable"
 import { HistorySidebar, type GraphSession } from './features/sidebar/HistorySidebar';
 import { useLanguage } from './contexts/LanguageContext';
+import { useAuth } from './contexts/AuthContext';
+import { AuthDialog } from './features/auth/AuthDialog';
+import { ClassroomWorkspace } from './features/classroom/ClassroomWorkspace';
+import { AccountMenu } from './features/auth/AccountMenu';
 
 // The graph renderer and Monaco editor are the two heaviest optional surfaces.
 // Loading them only after entering a learning session keeps the course catalog fast.
@@ -105,6 +109,10 @@ function App() {
   const [isGenerating, setIsGenerating] = useState(false);
   const [isChatLoading, setIsChatLoading] = useState(false);
   const [contextMenuNode, setContextMenuNode] = useState<ContextMenuNode | null>(null);
+  // 账号与班级两个入口在首页和学习页都要用，状态提到最外层。
+  const { user } = useAuth();
+  const [showAuthDialog, setShowAuthDialog] = useState(false);
+  const [showClassrooms, setShowClassrooms] = useState(false);
   const [isDialogOpen, setIsDialogOpen] = useState(false);
   // whether the lesson has actually started for the current node; used to stop regenerating plans
   const [lessonStarted, setLessonStarted] = useState(false);
@@ -175,7 +183,9 @@ function App() {
   const [graphSessions, setGraphSessions] = useState<FullGraphSession[]>([]);
   const [currentSessionId, setCurrentSessionId] = useState<string>(() => Date.now().toString()); // Start with a default ID
 
-  // Load initial state
+  // Load initial state.
+  // 依赖 user?.id：登录、切换账号、退出登录都会换掉数据归属，
+  // 必须重新拉取，否则界面上留着的是上一个身份的会话与进度。
   useEffect(() => {
     loadState();
     void api.listSessions().then((sessions) => {
@@ -194,7 +204,7 @@ function App() {
         courseTitle: session.course_title,
       })));
     }).catch((error) => console.error('Failed to load session history:', error));
-  }, []);
+  }, [user?.id]);
 
   const loadState = async () => {
     try {
@@ -1427,6 +1437,17 @@ ${evaluation.feedback}
 
   return (
     <div className={showLanding ? "bg-background min-h-screen" : "flex flex-col h-screen bg-background text-foreground relative"}>
+       {/* 登录与班级：首页和学习页共用同一份状态 */}
+       <AuthDialog open={showAuthDialog} onOpenChange={setShowAuthDialog} />
+       <ClassroomWorkspace
+          open={showClassrooms}
+          onOpenChange={setShowClassrooms}
+          onRequestLogin={() => {
+            setShowClassrooms(false);
+            setShowAuthDialog(true);
+          }}
+       />
+
        {/* Node Details Modal */ }
        <NodeDetailsModal 
           node={contextMenuNode} 
@@ -1438,6 +1459,12 @@ ${evaluation.feedback}
 
        {showLanding ? (
            <HomePage
+             accountMenu={
+               <AccountMenu
+                 onRequestLogin={() => setShowAuthDialog(true)}
+                 onOpenClassrooms={() => setShowClassrooms(true)}
+               />
+             }
              onStart={() => setIsDialogOpen(true)}
              onUploadDoc={() => setIsDialogOpen(true)}
              onSelectCourse={handleStartCourse}
@@ -1489,6 +1516,11 @@ ${evaluation.feedback}
                         >
                             {theme === 'dark' ? <BookOpen className="h-4 w-4" /> : <Sun className="h-4 w-4" />}
                         </Button>
+
+                        <AccountMenu
+                            onRequestLogin={() => setShowAuthDialog(true)}
+                            onOpenClassrooms={() => setShowClassrooms(true)}
+                        />
 
                         {teachingPlan && !isPlanView && (
                             <Button 
