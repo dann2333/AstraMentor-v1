@@ -1,0 +1,354 @@
+/* ==========================================================================
+   Liquid Glass —— iOS 风格毛玻璃材质层
+   ==========================================================================
+
+   苹果那种"毛玻璃"不是一层简单的模糊。真正让它成立的是四件事同时发生：
+
+     1. 折射（refraction）—— 边缘把背后的内容挤压变形，像一块有厚度的玻璃。
+        用 SVG feDisplacementMap 做，只在边缘一圈施加位移。
+     2. 高光（specular）—— 顶部一道亮边、底部一道暗边，暗示光从上方来。
+     3. 景深（depth）—— 模糊 + 提饱和 + 微提亮，让背后的颜色"透"上来而不是灰掉。
+     4. 投影（ambient）—— 多层柔和阴影，把这块玻璃从背景里"抬"起来。
+
+   只做第 3 件事就是常见的廉价毛玻璃；这里四件都做。
+
+   材质分三档（tier），对应它离用户的"距离"：
+     --glass-thin    贴在内容上的小元件（按钮、标签、输入框）
+     --glass-regular 面板、卡片、侧边栏
+     --glass-thick   浮在最上层的模态、导航条
+
+   所有变量都基于既有主题色（--background / --foreground），因此暗色与
+   护眼亮色两套主题下都成立，不需要各写一遍。
+   ========================================================================== */
+
+:root {
+  /* 玻璃本体的底色：暗色主题下是"加一点白"，亮色主题下是"加一点白但更实" */
+  --glass-tint: 255 255 255;
+  --glass-tint-alpha-thin: 0.06;
+  --glass-tint-alpha-regular: 0.09;
+  --glass-tint-alpha-thick: 0.14;
+
+  --glass-blur-thin: 12px;
+  --glass-blur-regular: 24px;
+  --glass-blur-thick: 40px;
+
+  --glass-saturate: 180%;
+  --glass-brightness: 1.06;
+
+  /* 高光：顶部亮边与底部暗边 */
+  --glass-specular-top: rgba(255, 255, 255, 0.45);
+  --glass-specular-bottom: rgba(255, 255, 255, 0.06);
+  --glass-edge: rgba(255, 255, 255, 0.18);
+
+  /* 环境光投影 */
+  --glass-shadow-ambient: 0 1px 2px rgba(0, 0, 0, 0.16),
+    0 8px 24px -8px rgba(0, 0, 0, 0.4), 0 24px 64px -24px rgba(0, 0, 0, 0.55);
+  --glass-shadow-raised: 0 2px 4px rgba(0, 0, 0, 0.2),
+    0 16px 40px -12px rgba(0, 0, 0, 0.5), 0 40px 96px -32px rgba(0, 0, 0, 0.65);
+
+  /* 圆角。iOS 用的是连续曲率，越大的面板圆角越大 */
+  --glass-radius-sm: 12px;
+  --glass-radius-md: 18px;
+  --glass-radius-lg: 26px;
+  --glass-radius-xl: 34px;
+  --glass-radius-pill: 999px;
+
+  /* 动效：全部用弹簧感的缓动，不用线性 */
+  --glass-ease-out: cubic-bezier(0.16, 1, 0.3, 1);
+  --glass-ease-spring: cubic-bezier(0.34, 1.56, 0.64, 1);
+  --glass-duration-fast: 180ms;
+  --glass-duration: 320ms;
+  --glass-duration-slow: 520ms;
+}
+
+/* 护眼亮色主题下，玻璃要更"实"一点才压得住浅色背景 */
+.eye-care {
+  --glass-tint-alpha-thin: 0.5;
+  --glass-tint-alpha-regular: 0.6;
+  --glass-tint-alpha-thick: 0.72;
+  --glass-saturate: 160%;
+  --glass-brightness: 1.02;
+  --glass-specular-top: rgba(255, 255, 255, 0.9);
+  --glass-specular-bottom: rgba(255, 255, 255, 0.35);
+  --glass-edge: rgba(120, 100, 80, 0.16);
+  --glass-shadow-ambient: 0 1px 2px rgba(90, 70, 50, 0.08),
+    0 8px 24px -8px rgba(90, 70, 50, 0.16), 0 24px 64px -24px rgba(90, 70, 50, 0.2);
+  --glass-shadow-raised: 0 2px 4px rgba(90, 70, 50, 0.1),
+    0 16px 40px -12px rgba(90, 70, 50, 0.2), 0 40px 96px -32px rgba(90, 70, 50, 0.28);
+}
+
+/* --------------------------------------------------------------------------
+   以下全部放进 @layer components。
+   --------------------------------------------------------------------------
+   Tailwind v4 把工具类放在 `utilities` 层，而**无层级的规则胜过任何层级里的
+   规则**。这些玻璃类如果不进层，就会盖掉每一个 Tailwind 工具类 ——
+   最直接的后果是 `.glass` 的 `position: relative` 把对话框的 `fixed` 顶掉，
+   模态直接掉到页面底部。进了 components 层之后，工具类照常生效。
+   -------------------------------------------------------------------------- */
+@layer components {
+
+/* --------------------------------------------------------------------------
+   基础材质
+   -------------------------------------------------------------------------- */
+.glass {
+  position: relative;
+  isolation: isolate;
+  border-radius: var(--glass-radius-md);
+  background: linear-gradient(
+    160deg,
+    rgb(var(--glass-tint) / calc(var(--glass-alpha) * 1.35)) 0%,
+    rgb(var(--glass-tint) / var(--glass-alpha)) 42%,
+    rgb(var(--glass-tint) / calc(var(--glass-alpha) * 0.72)) 100%
+  );
+  -webkit-backdrop-filter: blur(var(--glass-blur)) saturate(var(--glass-saturate))
+    brightness(var(--glass-brightness));
+  backdrop-filter: blur(var(--glass-blur)) saturate(var(--glass-saturate))
+    brightness(var(--glass-brightness));
+  box-shadow:
+    inset 0 1px 0 0 var(--glass-specular-top),
+    inset 0 -1px 0 0 var(--glass-specular-bottom),
+    inset 0 0 0 1px var(--glass-edge),
+    var(--glass-shadow-ambient);
+  transition:
+    box-shadow var(--glass-duration) var(--glass-ease-out),
+    background var(--glass-duration) var(--glass-ease-out),
+    transform var(--glass-duration) var(--glass-ease-spring);
+}
+
+.glass--thin {
+  --glass-alpha: var(--glass-tint-alpha-thin);
+  --glass-blur: var(--glass-blur-thin);
+  border-radius: var(--glass-radius-sm);
+}
+
+.glass--regular {
+  --glass-alpha: var(--glass-tint-alpha-regular);
+  --glass-blur: var(--glass-blur-regular);
+}
+
+.glass--thick {
+  --glass-alpha: var(--glass-tint-alpha-thick);
+  --glass-blur: var(--glass-blur-thick);
+  border-radius: var(--glass-radius-lg);
+  box-shadow:
+    inset 0 1px 0 0 var(--glass-specular-top),
+    inset 0 -1px 0 0 var(--glass-specular-bottom),
+    inset 0 0 0 1px var(--glass-edge),
+    var(--glass-shadow-raised);
+}
+
+/* --------------------------------------------------------------------------
+   折射边缘
+   --------------------------------------------------------------------------
+   一块真玻璃的中间几乎是平的，只有靠近边缘的地方才明显扭曲背后的画面。
+   这里用一层伪元素施加 SVG 位移滤镜，并用径向遮罩把效果限制在边缘一圈。
+   浏览器不支持 backdrop-filter 引用 SVG 滤镜时整层自动消失，
+   底下的 blur + saturate 仍然成立。
+   -------------------------------------------------------------------------- */
+@supports (backdrop-filter: url(#glass-refraction)) {
+  .glass--refract::before {
+    content: '';
+    position: absolute;
+    inset: 0;
+    z-index: -1;
+    border-radius: inherit;
+    -webkit-backdrop-filter: url(#glass-refraction);
+    backdrop-filter: url(#glass-refraction);
+    -webkit-mask-image: radial-gradient(
+      120% 120% at 50% 50%,
+      transparent 55%,
+      #000 88%
+    );
+    mask-image: radial-gradient(120% 120% at 50% 50%, transparent 55%, #000 88%);
+    pointer-events: none;
+  }
+}
+
+/* --------------------------------------------------------------------------
+   镜面高光：跟随指针的一道柔光，这是"液态"感的来源
+   -------------------------------------------------------------------------- */
+.glass--lit::after {
+  content: '';
+  position: absolute;
+  inset: 0;
+  z-index: 1;
+  border-radius: inherit;
+  background: radial-gradient(
+    240px circle at var(--glass-pointer-x, 50%) var(--glass-pointer-y, 0%),
+    rgba(255, 255, 255, 0.22),
+    rgba(255, 255, 255, 0.06) 38%,
+    transparent 72%
+  );
+  opacity: 0;
+  transition: opacity var(--glass-duration) var(--glass-ease-out);
+  pointer-events: none;
+}
+
+.glass--lit:hover::after,
+.glass--lit:focus-within::after {
+  opacity: 1;
+}
+
+/* --------------------------------------------------------------------------
+   细颗粒：真实玻璃不是绝对光滑的，一点噪点能去掉塑料感
+   -------------------------------------------------------------------------- */
+.glass--grain {
+  background-image:
+    linear-gradient(
+      160deg,
+      rgb(var(--glass-tint) / calc(var(--glass-alpha) * 1.35)) 0%,
+      rgb(var(--glass-tint) / var(--glass-alpha)) 42%,
+      rgb(var(--glass-tint) / calc(var(--glass-alpha) * 0.72)) 100%
+    ),
+    url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='140' height='140'%3E%3Cfilter id='n'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='0.85' numOctaves='3'/%3E%3C/filter%3E%3Crect width='140' height='140' filter='url(%23n)' opacity='0.035'/%3E%3C/svg%3E");
+  background-blend-mode: normal, overlay;
+}
+
+/* --------------------------------------------------------------------------
+   可交互材质：悬停浮起、按下压实
+   -------------------------------------------------------------------------- */
+.glass--interactive {
+  cursor: pointer;
+  will-change: transform;
+}
+
+.glass--interactive:hover {
+  transform: translateY(-2px);
+  box-shadow:
+    inset 0 1px 0 0 var(--glass-specular-top),
+    inset 0 -1px 0 0 var(--glass-specular-bottom),
+    inset 0 0 0 1px var(--glass-edge),
+    var(--glass-shadow-raised);
+}
+
+.glass--interactive:active {
+  transform: translateY(0) scale(0.985);
+  transition-duration: var(--glass-duration-fast);
+}
+
+.glass--interactive:focus-visible {
+  outline: none;
+  box-shadow:
+    inset 0 1px 0 0 var(--glass-specular-top),
+    inset 0 0 0 1px var(--glass-edge),
+    0 0 0 3px hsl(var(--ring) / 0.55),
+    var(--glass-shadow-raised);
+}
+
+/* --------------------------------------------------------------------------
+   色调玻璃：主色/强调色的染色版本，用于主按钮与选中态
+   -------------------------------------------------------------------------- */
+.glass--tint-primary {
+  --glass-tint: 255 255 255;
+  background: linear-gradient(
+      160deg,
+      hsl(var(--primary) / 0.92) 0%,
+      hsl(var(--primary) / 0.72) 100%
+    ),
+    linear-gradient(160deg, rgba(255, 255, 255, 0.24), transparent 60%);
+  color: hsl(var(--primary-foreground));
+}
+
+.glass--tint-accent {
+  background: linear-gradient(
+      160deg,
+      hsl(var(--accent) / 0.9) 0%,
+      hsl(var(--accent) / 0.68) 100%
+    ),
+    linear-gradient(160deg, rgba(255, 255, 255, 0.24), transparent 60%);
+  color: hsl(var(--accent-foreground));
+}
+
+.glass--tint-danger {
+  background: linear-gradient(
+      160deg,
+      hsl(var(--destructive) / 0.9) 0%,
+      hsl(var(--destructive) / 0.7) 100%
+    ),
+    linear-gradient(160deg, rgba(255, 255, 255, 0.2), transparent 60%);
+  color: hsl(var(--destructive-foreground));
+}
+
+/* --------------------------------------------------------------------------
+   分隔线与内嵌凹槽
+   -------------------------------------------------------------------------- */
+.glass-divider {
+  height: 1px;
+  background: linear-gradient(
+    90deg,
+    transparent,
+    var(--glass-edge) 12%,
+    var(--glass-edge) 88%,
+    transparent
+  );
+  border: 0;
+}
+
+.glass-inset {
+  border-radius: var(--glass-radius-sm);
+  background: rgb(0 0 0 / 0.18);
+  box-shadow:
+    inset 0 1px 2px rgba(0, 0, 0, 0.35),
+    inset 0 -1px 0 var(--glass-specular-bottom);
+}
+
+.eye-care .glass-inset {
+  background: rgb(255 255 255 / 0.55);
+  box-shadow:
+    inset 0 1px 2px rgba(90, 70, 50, 0.12),
+    inset 0 -1px 0 rgba(255, 255, 255, 0.8);
+}
+
+/* --------------------------------------------------------------------------
+   氛围光斑：玻璃需要背后有东西可透，否则看不出材质
+   -------------------------------------------------------------------------- */
+.glass-ambience {
+  position: fixed;
+  inset: 0;
+  z-index: 0;
+  overflow: hidden;
+  pointer-events: none;
+}
+
+.glass-ambience__orb {
+  position: absolute;
+  border-radius: 50%;
+  filter: blur(80px);
+  opacity: 0.55;
+  will-change: transform;
+}
+
+.eye-care .glass-ambience__orb {
+  opacity: 0.32;
+  filter: blur(90px);
+}
+
+/* --------------------------------------------------------------------------
+   无障碍：尊重"减少动态效果"
+   -------------------------------------------------------------------------- */
+@media (prefers-reduced-motion: reduce) {
+  .glass,
+  .glass--interactive,
+  .glass--lit::after {
+    transition-duration: 1ms !important;
+  }
+
+  .glass--interactive:hover,
+  .glass--interactive:active {
+    transform: none;
+  }
+
+  .glass-ambience__orb {
+    animation: none !important;
+  }
+}
+
+/* 极端情况下（浏览器完全不支持 backdrop-filter）退化成不透明面板，
+   而不是一块看不清内容的半透明色块 */
+@supports not ((backdrop-filter: blur(1px)) or (-webkit-backdrop-filter: blur(1px))) {
+  .glass {
+    background: hsl(var(--card) / 0.96);
+  }
+}
+
+}

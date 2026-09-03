@@ -22,6 +22,10 @@ import { useAuth } from './contexts/AuthContext';
 import { AuthDialog } from './features/auth/AuthDialog';
 import { ClassroomWorkspace } from './features/classroom/ClassroomWorkspace';
 import { AccountMenu } from './features/auth/AccountMenu';
+import { GlassFilters } from './components/glass/GlassFilters';
+import { GlassAmbience } from './components/glass/GlassAmbience';
+import { AnimatePresence, motion } from 'motion/react';
+import { pageVariants } from './lib/motion';
 
 // The graph renderer and Monaco editor are the two heaviest optional surfaces.
 // Loading them only after entering a learning session keeps the course catalog fast.
@@ -1457,7 +1461,12 @@ ${evaluation.feedback}
   };
 
   return (
-    <div className={showLanding ? "bg-background min-h-screen" : "flex flex-col h-screen bg-background text-foreground relative"}>
+    <div className={showLanding ? "bg-background min-h-screen relative" : "flex flex-col h-screen bg-background text-foreground relative"}>
+       {/* 玻璃材质的两个前置件：折射滤镜定义，以及背后的氛围光。
+           毛玻璃需要背后有东西可透，纯色背景上再精细的材质也看不出来。 */}
+       <GlassFilters />
+       <GlassAmbience />
+
        {/* 登录与班级：首页和学习页共用同一份状态 */}
        <AuthDialog open={showAuthDialog} onOpenChange={setShowAuthDialog} />
        <ClassroomWorkspace
@@ -1478,7 +1487,15 @@ ${evaluation.feedback}
           onDelete={handleDeleteNode}
        />
 
+       <AnimatePresence mode="wait" initial={false}>
        {showLanding ? (
+         <motion.div
+           key="landing"
+           variants={pageVariants}
+           initial="hidden"
+           animate="visible"
+           exit="exit"
+         >
            <HomePage
              accountMenu={
                <AccountMenu
@@ -1495,9 +1512,18 @@ ${evaluation.feedback}
              courseRecovery={courseRecovery}
              onCourseRecoveryHandled={() => setCourseRecovery(null)}
            />
+         </motion.div>
        ) : (
+         <motion.div
+           key="workspace"
+           className="flex h-full flex-col"
+           variants={pageVariants}
+           initial="hidden"
+           animate="visible"
+           exit="exit"
+         >
            <div className="flex flex-col h-full bg-background/50"> {/* Soft background wrapper */}
-              <header className="px-6 py-4 flex items-center justify-between bg-transparent z-10 relative">
+              <header className="glass glass--regular glass--grain glass--refract mx-4 mt-3 flex items-center justify-between rounded-[var(--glass-radius-lg)] px-5 py-3 relative z-10">
                   <div className="flex items-center gap-4">
                     <Button variant="ghost" size="icon" onClick={() => setShowHistory(!showHistory)} className="mr-1 hover:bg-white/50">
                         <Menu className="h-6 w-6 text-foreground/80" />
@@ -1768,8 +1794,10 @@ ${evaluation.feedback}
                 </div>
               </main>
            </div>
+         </motion.div>
        )}
-       
+       </AnimatePresence>
+
        <GenerateGraphDialog 
            open={isDialogOpen} 
            onOpenChange={setIsDialogOpen}

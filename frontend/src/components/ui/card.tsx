@@ -8,7 +8,9 @@ const Card = React.forwardRef<
   <div
     ref={ref}
     className={cn(
-      "rounded-lg border bg-card text-card-foreground shadow-sm",
+      // 卡片是"常规档"玻璃：面板级的模糊与折射，但不做指针高光——
+      // 卡片通常成组出现，每张都亮一下会很吵。
+      "glass glass--regular glass--grain glass--refract text-card-foreground",
       className
     )}
     {...props}
