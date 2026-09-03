@@ -18,7 +18,19 @@ from typing import Iterator
 
 DEFAULT_DATABASE_PATH = Path("user_data") / "astramentor.db"
 
-SCHEMA_VERSION = 1
+SCHEMA_VERSION = 3
+
+# NOTE: 未登录访客的数据也必须有归属，否则无法隔离，也无法随账号级联删除。
+# 这里预留一行系统用户：用户名以下划线开头，永远无法通过注册接口占用；
+# password_hash 故意写成无法解析的值，is_active=0，因此既不能登录也不能签发令牌。
+ANONYMOUS_OWNER_ID = "anonymous"
+ANONYMOUS_USERNAME = "__anonymous__"
+SYSTEM_USER_IDS = frozenset({ANONYMOUS_OWNER_ID})
+
+ROLE_STUDENT = "student"
+ROLE_TEACHER = "teacher"
+ROLE_ADMIN = "admin"
+VALID_ROLES = (ROLE_STUDENT, ROLE_TEACHER, ROLE_ADMIN)
 
 # NOTE: 每个迁移只追加，不修改历史条目；user_version 决定从哪一步继续执行。
 MIGRATIONS: tuple[tuple[str, ...], ...] = (
@@ -68,6 +80,142 @@ MIGRATIONS: tuple[tuple[str, ...], ...] = (
         """,
         "CREATE INDEX IF NOT EXISTS idx_user_sessions_updated "
         "ON user_sessions(user_id, updated_at DESC)",
+    ),
+    # v2: 角色字段 + 访客归属行 + 按账号隔离的学习数据
+    (
+        f"ALTER TABLE users ADD COLUMN role TEXT NOT NULL DEFAULT '{ROLE_STUDENT}'",
+        # 固定时间戳标记这是系统行，而不是某次真实注册。
+        f"""
+        INSERT OR IGNORE INTO users (
+            id, username, username_lower, email, email_lower, display_name,
+            password_hash, is_active, role, created_at, updated_at
+        ) VALUES (
+            '{ANONYMOUS_OWNER_ID}', '{ANONYMOUS_USERNAME}', '{ANONYMOUS_USERNAME}',
+            NULL, NULL, '访客', '!', 0, '{ROLE_STUDENT}',
+            '1970-01-01T00:00:00+00:00', '1970-01-01T00:00:00+00:00'
+        )
+        """,
+        """
+        CREATE TABLE IF NOT EXISTS knowledge_graphs (
+            owner_id   TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+            scope_key  TEXT NOT NULL,
+            topic      TEXT NOT NULL DEFAULT '',
+            course_id  TEXT,
+            payload    TEXT NOT NULL,
+            created_at TEXT NOT NULL,
+            updated_at TEXT NOT NULL,
+            PRIMARY KEY (owner_id, scope_key)
+        )
+        """,
+        "CREATE INDEX IF NOT EXISTS idx_knowledge_graphs_updated "
+        "ON knowledge_graphs(owner_id, updated_at DESC)",
+        """
+        CREATE TABLE IF NOT EXISTS learner_states (
+            owner_id   TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+            scope_key  TEXT NOT NULL,
+            payload    TEXT NOT NULL,
+            created_at TEXT NOT NULL,
+            updated_at TEXT NOT NULL,
+            PRIMARY KEY (owner_id, scope_key)
+        )
+        """,
+        """
+        CREATE TABLE IF NOT EXISTS documents (
+            owner_id    TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+            doc_id      TEXT NOT NULL,
+            filename    TEXT NOT NULL DEFAULT '',
+            total_pages INTEGER NOT NULL DEFAULT 0,
+            chunk_count INTEGER NOT NULL DEFAULT 0,
+            payload     TEXT NOT NULL,
+            created_at  TEXT NOT NULL,
+            updated_at  TEXT NOT NULL,
+            PRIMARY KEY (owner_id, doc_id)
+        )
+        """,
+        "CREATE INDEX IF NOT EXISTS idx_documents_updated "
+        "ON documents(owner_id, updated_at DESC)",
+        # 首页历史栏需要这些字段。放成列而不是每次去解 payload，
+        # 否则列出 20 条会话就要读 20 份最大 4MB 的 JSON。
+        "ALTER TABLE user_sessions ADD COLUMN last_node_id TEXT",
+        "ALTER TABLE user_sessions ADD COLUMN last_node_name TEXT",
+        "ALTER TABLE user_sessions ADD COLUMN current_step INTEGER",
+        "ALTER TABLE user_sessions ADD COLUMN total_steps INTEGER",
+        "ALTER TABLE user_sessions ADD COLUMN average_mastery REAL NOT NULL DEFAULT 0.0",
+    ),
+    # v3: 班级、师生关系与作业
+    (
+        """
+        CREATE TABLE IF NOT EXISTS classrooms (
+            id          TEXT PRIMARY KEY,
+            teacher_id  TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+            name        TEXT NOT NULL,
+            description TEXT NOT NULL DEFAULT '',
+            join_code   TEXT NOT NULL UNIQUE,
+            is_archived INTEGER NOT NULL DEFAULT 0,
+            created_at  TEXT NOT NULL,
+            updated_at  TEXT NOT NULL
+        )
+        """,
+        "CREATE INDEX IF NOT EXISTS idx_classrooms_teacher "
+        "ON classrooms(teacher_id, created_at DESC)",
+        """
+        CREATE TABLE IF NOT EXISTS classroom_members (
+            classroom_id TEXT NOT NULL REFERENCES classrooms(id) ON DELETE CASCADE,
+            student_id   TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+            joined_at    TEXT NOT NULL,
+            PRIMARY KEY (classroom_id, student_id)
+        )
+        """,
+        "CREATE INDEX IF NOT EXISTS idx_classroom_members_student "
+        "ON classroom_members(student_id, joined_at DESC)",
+        # 邀请码只有 8 位，必须限制单账号的试错速率，否则可被枚举。
+        """
+        CREATE TABLE IF NOT EXISTS classroom_join_attempts (
+            user_id           TEXT PRIMARY KEY REFERENCES users(id) ON DELETE CASCADE,
+            attempts          INTEGER NOT NULL DEFAULT 0,
+            window_started_at TEXT NOT NULL
+        )
+        """,
+        """
+        CREATE TABLE IF NOT EXISTS assignments (
+            id               TEXT PRIMARY KEY,
+            classroom_id     TEXT NOT NULL REFERENCES classrooms(id) ON DELETE CASCADE,
+            title            TEXT NOT NULL,
+            instructions     TEXT NOT NULL DEFAULT '',
+            target_kind      TEXT NOT NULL DEFAULT 'free',
+            target_topic     TEXT NOT NULL DEFAULT '',
+            target_course_id TEXT,
+            target_node      TEXT NOT NULL DEFAULT '',
+            due_at           TEXT,
+            max_score        REAL NOT NULL DEFAULT 100.0,
+            is_published     INTEGER NOT NULL DEFAULT 0,
+            created_at       TEXT NOT NULL,
+            updated_at       TEXT NOT NULL
+        )
+        """,
+        "CREATE INDEX IF NOT EXISTS idx_assignments_classroom "
+        "ON assignments(classroom_id, created_at DESC)",
+        """
+        CREATE TABLE IF NOT EXISTS assignment_submissions (
+            id            TEXT PRIMARY KEY,
+            assignment_id TEXT NOT NULL REFERENCES assignments(id) ON DELETE CASCADE,
+            student_id    TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+            content       TEXT NOT NULL DEFAULT '',
+            session_id    TEXT,
+            status        TEXT NOT NULL DEFAULT 'submitted',
+            is_late       INTEGER NOT NULL DEFAULT 0,
+            submitted_at  TEXT NOT NULL,
+            score         REAL,
+            feedback      TEXT NOT NULL DEFAULT '',
+            graded_by     TEXT REFERENCES users(id) ON DELETE SET NULL,
+            graded_at     TEXT,
+            created_at    TEXT NOT NULL,
+            updated_at    TEXT NOT NULL,
+            UNIQUE (assignment_id, student_id)
+        )
+        """,
+        "CREATE INDEX IF NOT EXISTS idx_submissions_student "
+        "ON assignment_submissions(student_id, updated_at DESC)",
     ),
 )
 

@@ -13,6 +13,14 @@ from agents.knowledge_graph_agent import KnowledgeGraphAgent
 from core.learner_state import LearnerState, KnowledgePoint
 from core.constants import LearningLevel
 from core.prompts import build_project_context_injection
+from services.database import ANONYMOUS_OWNER_ID
+from services.learning_store import (
+    LearningStore,
+    PayloadTooLarge,
+    SqlLearnerStateStore,
+    learning_store,
+    validate_owner_id,
+)
 from utils.api_client import APIClient
 from rag.citations import build_course_context, citations_from_results
 from rag.course_registry import COURSE_ID_PATTERN
@@ -33,9 +41,19 @@ class LearningService:
 
     TEST_DATA_ROOT = Path("test_data")
 
-    def __init__(self, topic: str = "", course_id: str = ""):
+    def __init__(
+        self,
+        topic: str = "",
+        course_id: str = "",
+        *,
+        owner_id: str = ANONYMOUS_OWNER_ID,
+        store: Optional[LearningStore] = None,
+    ):
         if course_id and not COURSE_ID_PATTERN.fullmatch(course_id):
             raise ValueError("invalid course id")
+        # 归属账号先校验：后面所有读写都以它为主键，不能是空串或可疑值。
+        self.owner_id = validate_owner_id(owner_id)
+        self.store = store or learning_store
         self.api_client = APIClient()
         self.knowledge_graph = KnowledgeGraphAgent(api_client=self.api_client)
         self.teacher = TeacherAgent(api_client=self.api_client)
@@ -45,11 +63,18 @@ class LearningService:
         self.last_citations: List[Dict[str, Any]] = []
         self.last_knowledge_scope = "extension"
 
-        # NOTE: 按 topic 隔离学习状态文件，每张星图独立存储
-        state_file = str(self._state_file(topic))
-
-        self.learner_state = LearnerState(state_file=state_file)
-        logger.info(f"LearningService initialized (state_file={state_file})")
+        # NOTE: 状态按 (owner_id, scope_key) 隔离：同一个 topic 在不同课程、
+        # 不同账号下互不可见，删号时随外键级联清理。
+        self.learner_state = LearnerState(
+            store=SqlLearnerStateStore(
+                self.owner_id, self._state_scope(topic), self.store
+            )
+        )
+        logger.info(
+            "LearningService initialized (owner=%s, scope=%s)",
+            self.owner_id,
+            self._state_scope(topic),
+        )
 
     @staticmethod
     def _legacy_safe_topic(topic: str) -> str:
@@ -70,33 +95,27 @@ class LearningService:
             return f"{self.course_id}_{digest}"
         return self._legacy_safe_topic(topic)
 
-    def _data_path(self, filename: str) -> Path:
-        root = self.TEST_DATA_ROOT.resolve()
-        root.mkdir(parents=True, exist_ok=True)
-        path = (root / filename).resolve()
-        try:
-            path.relative_to(root)
-        except ValueError as exc:
-            raise ValueError("learning data path escapes test_data") from exc
-        return path
+    def _graph_scope(self, topic: str) -> str:
+        """星图的存储键；同一 topic 在不同课程下是两条独立记录。"""
+        return f"graph:{self._scoped_topic(topic)}"
 
-    def _graph_file(self, topic: str) -> Path:
-        return self._data_path(f"knowledge_graph_{self._scoped_topic(topic)}.json")
-
-    def _state_file(self, topic: str) -> Path:
+    def _state_scope(self, topic: str) -> str:
+        """学习者状态的存储键；无 topic 无课程时落到账号的默认状态。"""
         if not topic and not self.course_id:
-            return self._data_path("learner_state.json")
-        return self._data_path(f"learner_state_{self._scoped_topic(topic)}.json")
+            return "state:default"
+        return f"state:{self._scoped_topic(topic)}"
 
     def load_graph(self, topic: str) -> Optional[Dict[str, Any]]:
-        graph_file = self._graph_file(topic)
-        if not graph_file.exists():
-            return None
-        try:
-            value = json.loads(graph_file.read_text(encoding="utf-8"))
-        except (OSError, UnicodeDecodeError, json.JSONDecodeError):
-            return None
-        return value if isinstance(value, dict) else None
+        return self.store.read_graph(self.owner_id, self._graph_scope(topic))
+
+    def _persist_graph(self, topic: str, graph_data: Dict[str, Any]) -> None:
+        self.store.write_graph(
+            self.owner_id,
+            self._graph_scope(topic),
+            graph_data,
+            topic=topic,
+            course_id=self.course_id or None,
+        )
 
     def _get_retriever(self) -> Optional[CourseRetriever]:
         if not self.course_id:
@@ -148,10 +167,8 @@ class LearningService:
                 complexity=complexity,
             )
             
-            graph_file = self._graph_file(topic)
-            with open(graph_file, "w", encoding="utf-8") as f:
-                json.dump(graph_data, f, ensure_ascii=False, indent=2)
-            
+            self._persist_graph(topic, graph_data)
+
             return graph_data
         except CourseIndexNotReadyError:
             raise
@@ -177,9 +194,7 @@ class LearningService:
                 complexity=complexity,
             )
 
-            graph_file = self._graph_file(project_description[:50])
-            with open(graph_file, "w", encoding="utf-8") as f:
-                json.dump(graph_data, f, ensure_ascii=False, indent=2)
+            self._persist_graph(project_description[:50], graph_data)
 
             return graph_data
         except Exception as e:
@@ -188,36 +203,46 @@ class LearningService:
 
     def save_graph(self, topic: str, graph_data: Dict[str, Any]) -> bool:
         """
-        将修改后的图谱数据写回磁盘 JSON 文件
-        NOTE: 文件路径规则与 generate_knowledge_graph 保持一致
+        将修改后的图谱数据写回账号级存储
+        NOTE: 存储键规则与 generate_knowledge_graph 保持一致
         """
         try:
-            graph_file = self._graph_file(topic)
-            with open(graph_file, "w", encoding="utf-8") as f:
-                json.dump(graph_data, f, ensure_ascii=False, indent=2)
-            logger.info(f"Graph saved to {graph_file}")
+            self._persist_graph(topic, graph_data)
+            logger.info(
+                "Graph saved (owner=%s, scope=%s)",
+                self.owner_id,
+                self._graph_scope(topic),
+            )
             return True
+        except PayloadTooLarge:
+            # 体积超限是调用方的问题，必须原样上抛成 413，不能伪装成 500。
+            raise
         except Exception as e:
             logger.error(f"Failed to save graph: {e}")
             return False
 
     def delete_graph(self, topic: str) -> None:
         """
-        删除星图对应的图谱文件和学习状态文件
+        删除星图对应的图谱数据与学习状态
 
         Args:
-            topic: 学习主题，用于定位需要删除的文件
+            topic: 学习主题，用于定位需要删除的记录
         """
-        files_to_delete = [
-            self._graph_file(topic),
-            self._state_file(topic),
-        ]
-        for file_path in files_to_delete:
-            if file_path.exists():
-                file_path.unlink()
-                logger.info(f"已删除文件: {file_path}")
-            else:
-                logger.debug(f"文件不存在，跳过: {file_path}")
+        removed_graph = self.store.delete_graph(
+            self.owner_id, self._graph_scope(topic)
+        )
+        removed_state = self.store.delete_learner_state(
+            self.owner_id, self._state_scope(topic)
+        )
+        # 内存里的状态对象同步清空，否则同一实例后续读到的还是旧数据。
+        self.learner_state.knowledge_points = {}
+        logger.info(
+            "已删除星图数据 (owner=%s, topic=%s, graph=%s, state=%s)",
+            self.owner_id,
+            topic,
+            removed_graph,
+            removed_state,
+        )
 
     def expand_graph(
         self,
@@ -284,7 +309,7 @@ class LearningService:
                 initial_mastery=attrs.get("weight_A", 0.0),
             )
 
-        # NOTE: 持久化合并后的完整图谱到磁盘
+        # NOTE: 持久化合并后的完整图谱
         self.save_graph(topic=topic, graph_data=merged_graph)
 
         logger.info(

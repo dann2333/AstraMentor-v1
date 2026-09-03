@@ -5,10 +5,20 @@
 """
 
 import json
+import logging
+import os
+import tempfile
 from dataclasses import dataclass, field, asdict
 from datetime import datetime
 from pathlib import Path
-from typing import Optional
+from typing import Any, Optional, Protocol
+
+
+# NOTE: 每个知识点只保留最近若干条历史。整份状态是一个 JSON blob，
+# 每次评分都会整体重写，历史无上限时这个 blob 会无限膨胀。
+MAX_HISTORY_ENTRIES = 200
+
+logger = logging.getLogger(__name__)
 
 
 @dataclass
@@ -165,6 +175,9 @@ class KnowledgePoint:
             "score": score,
             "feedback": feedback
         })
+        if len(self.history) > MAX_HISTORY_ENTRIES:
+            # 丢掉最旧的记录，只保留最近的窗口
+            del self.history[:-MAX_HISTORY_ENTRIES]
         self.actual_mastery = new_mastery
         self.updated_at = datetime.now().isoformat()
     
@@ -223,25 +236,94 @@ class KnowledgePoint:
         return cls(**data)
 
 
+class LearnerStateStore(Protocol):
+    """状态后端契约：只需要读出与写入整份状态字典。
+
+    有了它，``LearnerState`` 就不再绑死本地 JSON 文件；服务端换成按账号隔离的
+    SQLite 后端时，那些散布在业务代码里的 ``_auto_save()`` 调用点无需改动。
+    """
+
+    def read(self) -> dict[str, Any]:
+        """返回已保存的状态；从未保存过时返回空字典。"""
+
+    def write(self, data: dict[str, Any]) -> None:
+        """整体覆盖写入状态。"""
+
+
+class JsonFileStateStore:
+    """本地 JSON 文件后端，供 CLI 与离线脚本使用。
+
+    写入走"临时文件 + 原子替换"，避免进程在写一半时退出留下坏文件。
+    """
+
+    def __init__(self, path: Path | str) -> None:
+        self.path = Path(path)
+
+    def read(self) -> dict[str, Any]:
+        if not self.path.exists():
+            return {}
+        try:
+            with open(self.path, "r", encoding="utf-8") as handle:
+                data = json.load(handle)
+        except (OSError, UnicodeDecodeError, json.JSONDecodeError):
+            return {}
+        return data if isinstance(data, dict) else {}
+
+    def write(self, data: dict[str, Any]) -> None:
+        self.path.parent.mkdir(parents=True, exist_ok=True)
+        handle = tempfile.NamedTemporaryFile(
+            "w",
+            encoding="utf-8",
+            dir=self.path.parent,
+            prefix=f".{self.path.name}.",
+            suffix=".tmp",
+            delete=False,
+        )
+        try:
+            with handle:
+                json.dump(data, handle, ensure_ascii=False, indent=2)
+                handle.flush()
+                os.fsync(handle.fileno())
+            os.replace(handle.name, self.path)
+        except BaseException:
+            Path(handle.name).unlink(missing_ok=True)
+            raise
+
+
 class LearnerState:
     """
     学习者状态管理类
-    
-    管理用户的所有知识点学习状态，支持持久化存储
+
+    管理用户的所有知识点学习状态，支持持久化存储。持久化后端可替换：
+    传 ``state_file`` 使用本地 JSON 文件，传 ``store`` 则接入任意后端
+    （服务端用按账号隔离的 SQLite）。两者都不传时状态只存在内存里。
     """
-    
-    def __init__(self, state_file: Optional[str] = None):
+
+    def __init__(
+        self,
+        state_file: Optional[str] = None,
+        *,
+        store: Optional[LearnerStateStore] = None,
+    ):
         """
         初始化学习者状态
-        
+
         Args:
             state_file: 状态文件路径，用于持久化存储
+            store: 自定义状态后端；给出时优先于 state_file
         """
         self.knowledge_points: dict[str, KnowledgePoint] = {}
         self.state_file = Path(state_file) if state_file else None
-        
-        # 如果状态文件存在，加载历史状态
-        if self.state_file and self.state_file.exists():
+
+        if store is not None:
+            self.store: Optional[LearnerStateStore] = store
+        elif self.state_file is not None:
+            self.store = JsonFileStateStore(self.state_file)
+        else:
+            self.store = None
+
+        # 载入已有状态（后端为空时是一次无副作用的空读）
+        if self.store is not None:
             self.load()
     
     def add_knowledge_point(
@@ -344,34 +426,36 @@ class LearnerState:
             "average_mastery": round(avg_mastery, 3)
         }
     
-    def save(self) -> None:
-        """保存状态到文件"""
-        if self.state_file is None:
-            return
-        
-        data = {
+    def to_dict(self) -> dict[str, Any]:
+        """整份状态的可序列化表示"""
+        return {
             name: kp.to_dict()
             for name, kp in self.knowledge_points.items()
         }
-        
-        self.state_file.parent.mkdir(parents=True, exist_ok=True)
-        with open(self.state_file, "w", encoding="utf-8") as f:
-            json.dump(data, f, ensure_ascii=False, indent=2)
-    
-    def load(self) -> None:
-        """从文件加载状态"""
-        if self.state_file is None or not self.state_file.exists():
+
+    def save(self) -> None:
+        """把状态写入配置的后端；未配置后端时静默跳过"""
+        if self.store is None:
             return
-        
-        with open(self.state_file, "r", encoding="utf-8") as f:
-            data = json.load(f)
-        
-        self.knowledge_points = {
-            name: KnowledgePoint.from_dict(kp_data)
-            for name, kp_data in data.items()
-        }
-    
+        self.store.write(self.to_dict())
+
+    def load(self) -> None:
+        """从配置的后端读取状态；未配置后端时静默跳过"""
+        if self.store is None:
+            return
+        data = self.store.read()
+        loaded: dict[str, KnowledgePoint] = {}
+        for name, kp_data in (data or {}).items():
+            if not isinstance(kp_data, dict):
+                continue
+            try:
+                loaded[name] = KnowledgePoint.from_dict(kp_data)
+            except TypeError:
+                # 旧版本写入的多余/缺失字段不应让整份状态无法加载
+                logger.warning("跳过无法解析的知识点状态: %s", name)
+        self.knowledge_points = loaded
+
     def _auto_save(self) -> None:
-        """自动保存（如果配置了状态文件）"""
-        if self.state_file:
+        """自动保存（如果配置了持久化后端）"""
+        if self.store is not None:
             self.save()

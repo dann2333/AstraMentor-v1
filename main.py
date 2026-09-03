@@ -9,6 +9,7 @@ import sys
 from pathlib import Path
 
 from services.learning_service import LearningService
+from services.database import ANONYMOUS_OWNER_ID
 from core.learner_state import LearnerState, KnowledgePoint
 from core.constants import LearningLevel
 from utils.api_client import APIClient
@@ -32,11 +33,15 @@ class AstraMentor:
     现在作为 LearningService 的 CLI 包装器
     """
 
-    def __init__(self, state_file: str = "learner_state.json"):
+    def __init__(self, topic: str = "", owner_id: str = ANONYMOUS_OWNER_ID):
         """
         初始化AstraMentor
+
+        Args:
+            topic: 学习主题，用于隔离状态；留空则使用该账号的默认状态
+            owner_id: 状态归属账号，默认落在本地访客账号下
         """
-        self.service = LearningService(state_file=state_file)
+        self.service = LearningService(topic=topic, owner_id=owner_id)
         self.knowledge_graph = self.service.knowledge_graph # Forward compatibility for property access
         self.learner_state = self.service.learner_state
         logger.info("AstraMentor (CLI) 初始化完成")

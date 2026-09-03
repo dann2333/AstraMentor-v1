@@ -1,5 +1,5 @@
 from pydantic import BaseModel, ConfigDict, Field
-from typing import List, Optional, Dict, Any
+from typing import Literal, List, Optional, Dict, Any
 
 class GenerateGraphRequest(BaseModel):
     topic: str
@@ -145,6 +145,11 @@ class GenerateDocGraphRequest(BaseModel):
     doc_id: str
     complexity: Optional[int] = 2
 
+class SaveDocGraphRequest(BaseModel):
+    """文档模式星图保存请求"""
+    doc_id: str
+    graph_data: Dict[str, Any]
+
 class DocStartLearningRequest(BaseModel):
     """文档模式开始学习请求"""
     doc_id: str
@@ -216,12 +221,19 @@ class SessionSnapshotRequest(BaseModel):
 # ============================================================================
 
 class RegisterRequest(BaseModel):
-    """注册请求：用户名 + 密码，邮箱与昵称可选"""
+    """注册请求：用户名 + 密码，邮箱与昵称可选
+
+    ``role`` 只接受 student / teacher。admin 无法自助获得——多一个未知字段
+    就直接 422，避免请求体里塞 ``role: admin`` 之类的越权尝试被静默忽略。
+    """
+
+    model_config = ConfigDict(extra="forbid")
 
     username: str = Field(min_length=3, max_length=32)
     password: str = Field(min_length=8, max_length=128)
     email: Optional[str] = Field(default=None, max_length=254)
     display_name: Optional[str] = Field(default=None, max_length=64)
+    role: Literal["student", "teacher"] = "student"
 
 
 class LoginRequest(BaseModel):
@@ -264,6 +276,7 @@ class UserResponse(BaseModel):
     created_at: str
     updated_at: str
     last_login_at: Optional[str] = None
+    role: str = "student"
 
 
 class TokenResponse(BaseModel):
@@ -288,3 +301,96 @@ class TokenSummary(BaseModel):
 
 class UserSessionSnapshotRequest(SessionSnapshotRequest):
     """账号维度的学习快照，与匿名快照共用字段定义"""
+
+
+# ============================================================================
+# 角色、班级与作业模型
+# ============================================================================
+
+# NOTE: 以下请求体统一 extra="forbid"。学生的提交体里没有 score/feedback，
+# 加上"多余字段直接 422"，就不存在"多传一个字段被静默丢弃"的批量赋值风险。
+
+class SetUserRoleRequest(BaseModel):
+    """管理员调整某个账号的角色"""
+
+    model_config = ConfigDict(extra="forbid")
+
+    role: Literal["student", "teacher", "admin"]
+
+
+class CreateClassroomRequest(BaseModel):
+    """建班：老师专用"""
+
+    model_config = ConfigDict(extra="forbid")
+
+    name: str = Field(min_length=1, max_length=80)
+    description: str = Field(default="", max_length=500)
+
+
+class UpdateClassroomRequest(BaseModel):
+    """改班：仅提交需要修改的字段"""
+
+    model_config = ConfigDict(extra="forbid")
+
+    name: Optional[str] = Field(default=None, min_length=1, max_length=80)
+    description: Optional[str] = Field(default=None, max_length=500)
+    is_archived: Optional[bool] = None
+
+
+class JoinClassroomRequest(BaseModel):
+    """学生凭邀请码入班"""
+
+    model_config = ConfigDict(extra="forbid")
+
+    join_code: str = Field(min_length=1, max_length=32)
+
+
+class CreateAssignmentRequest(BaseModel):
+    """布置作业：老师专用"""
+
+    model_config = ConfigDict(extra="forbid")
+
+    title: str = Field(min_length=1, max_length=120)
+    instructions: str = Field(default="", max_length=8000)
+    target_kind: Literal["free", "topic", "course", "node", "document"] = "free"
+    target_topic: str = Field(default="", max_length=200)
+    target_course_id: Optional[str] = Field(default=None, max_length=100)
+    target_node: str = Field(default="", max_length=200)
+    due_at: Optional[str] = Field(default=None, max_length=64)
+    max_score: float = Field(default=100.0, gt=0, le=10000)
+    is_published: bool = False
+
+
+class UpdateAssignmentRequest(BaseModel):
+    """改作业：仅提交需要修改的字段"""
+
+    model_config = ConfigDict(extra="forbid")
+
+    title: Optional[str] = Field(default=None, min_length=1, max_length=120)
+    instructions: Optional[str] = Field(default=None, max_length=8000)
+    target_kind: Optional[Literal["free", "topic", "course", "node", "document"]] = None
+    target_topic: Optional[str] = Field(default=None, max_length=200)
+    target_course_id: Optional[str] = Field(default=None, max_length=100)
+    target_node: Optional[str] = Field(default=None, max_length=200)
+    due_at: Optional[str] = Field(default=None, max_length=64)
+    clear_due_at: bool = False
+    max_score: Optional[float] = Field(default=None, gt=0, le=10000)
+    is_published: Optional[bool] = None
+
+
+class SubmitAssignmentRequest(BaseModel):
+    """学生提交作业。注意这里没有任何评分字段。"""
+
+    model_config = ConfigDict(extra="forbid")
+
+    content: str = Field(min_length=1, max_length=40000)
+    session_id: Optional[str] = Field(default=None, max_length=128)
+
+
+class GradeSubmissionRequest(BaseModel):
+    """老师批改。score 传 null 表示只留评语、撤回分数。"""
+
+    model_config = ConfigDict(extra="forbid")
+
+    score: Optional[float] = Field(default=None, ge=0, le=10000)
+    feedback: str = Field(default="", max_length=4000)

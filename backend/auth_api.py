@@ -21,6 +21,7 @@ from services.account_service import (
     AccountService,
     EmailTaken,
     InvalidCredentials,
+    ReservedUsername,
     User,
     UsernameTaken,
     UserNotFound,
@@ -53,8 +54,12 @@ def register(
             request.password,
             email=request.email,
             display_name=request.display_name,
+            # allow_admin_role 永远不传：admin 只能由已有管理员授予。
+            role=request.role,
         )
     except ValidationError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+    except ReservedUsername as exc:
         raise HTTPException(status_code=422, detail=str(exc)) from exc
     except (UsernameTaken, EmailTaken) as exc:
         raise HTTPException(status_code=409, detail=str(exc)) from exc

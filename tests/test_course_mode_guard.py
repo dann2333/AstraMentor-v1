@@ -7,6 +7,7 @@ from fastapi import HTTPException
 
 from backend.api import get_service
 from rag.errors import CourseIndexNotReadyError
+from services.database import ANONYMOUS_OWNER_ID
 from services.learning_service import LearningService
 
 
@@ -39,7 +40,7 @@ class CourseModeGuardTests(unittest.TestCase):
                     "backend.api.LearningService"
                 ) as service_class:
                     with self.assertRaises(CourseIndexNotReadyError) as caught:
-                        get_service("topic", "demo", require_course_index=True)
+                        get_service(ANONYMOUS_OWNER_ID, "topic", "demo", require_course_index=True)
                     self.assertEqual(caught.exception.status, status)
                     service_class.assert_not_called()
 
@@ -48,9 +49,11 @@ class CourseModeGuardTests(unittest.TestCase):
         with patch("backend.api.course_runtime", runtime), patch(
             "backend.api.LearningService", return_value=Mock()
         ) as service_class:
-            get_service("topic", "demo", require_course_index=False)
+            get_service("owner-1", "topic", "demo", require_course_index=False)
         self.assertEqual(runtime.ready_calls, 0)
-        service_class.assert_called_once_with(topic="topic", course_id="demo")
+        service_class.assert_called_once_with(
+            topic="topic", course_id="demo", owner_id="owner-1"
+        )
 
     def test_unknown_course_is_404_before_any_service_or_path(self) -> None:
         runtime = _Runtime("ready")
@@ -58,7 +61,7 @@ class CourseModeGuardTests(unittest.TestCase):
             "backend.api.LearningService"
         ) as service_class:
             with self.assertRaises(HTTPException) as caught:
-                get_service("../../topic", "../escape", require_course_index=True)
+                get_service(ANONYMOUS_OWNER_ID, "../../topic", "../escape", require_course_index=True)
         self.assertEqual(caught.exception.status_code, 404)
         service_class.assert_not_called()
 
