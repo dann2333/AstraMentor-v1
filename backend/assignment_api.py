@@ -20,6 +20,7 @@ from services.account_service import User
 from services.assignment_service import (
     AssignmentNotFound,
     AssignmentService,
+    ClassroomArchived,
     SubmissionNotFound,
     ValidationError,
 )
@@ -204,6 +205,8 @@ def submit_assignment(
         )
     except AssignmentNotFound as exc:
         raise _assignment_not_found() from exc
+    except ClassroomArchived as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
     except ValidationError as exc:
         raise HTTPException(status_code=422, detail=str(exc)) from exc
     return submission.to_dict()

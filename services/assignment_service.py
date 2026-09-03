@@ -74,6 +74,10 @@ class NotEnrolled(AssignmentError):
     """Raised when the caller is not a student of the assignment's classroom."""
 
 
+class ClassroomArchived(AssignmentError):
+    """Raised when acting on an assignment whose classroom has been closed."""
+
+
 def _parse_timestamp(value: str | None) -> datetime | None:
     if not value:
         return None
@@ -267,6 +271,7 @@ _ASSIGNMENT_SELECT = """
     SELECT a.*,
            c.name AS classroom_name,
            c.teacher_id AS teacher_id,
+           c.is_archived AS classroom_archived,
            (SELECT COUNT(*) FROM assignment_submissions s
              WHERE s.assignment_id = a.id) AS submission_count,
            (SELECT COUNT(*) FROM assignment_submissions s
@@ -369,30 +374,34 @@ class AssignmentService:
         now = utc_now()
         assignment_id = uuid4().hex
         with self.database.transaction() as connection:
-            connection.execute(
-                """
-                INSERT INTO assignments (
-                    id, classroom_id, title, instructions, target_kind,
-                    target_topic, target_course_id, target_node, due_at,
-                    max_score, is_published, created_at, updated_at
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-                """,
-                (
-                    assignment_id,
-                    classroom_id,
-                    fields["title"],
-                    fields["instructions"],
-                    fields["target_kind"],
-                    fields["target_topic"],
-                    fields["target_course_id"],
-                    fields["target_node"],
-                    fields["due_at"],
-                    fields["max_score"],
-                    1 if is_published else 0,
-                    now,
-                    now,
-                ),
-            )
+            try:
+                connection.execute(
+                    """
+                    INSERT INTO assignments (
+                        id, classroom_id, title, instructions, target_kind,
+                        target_topic, target_course_id, target_node, due_at,
+                        max_score, is_published, created_at, updated_at
+                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    """,
+                    (
+                        assignment_id,
+                        classroom_id,
+                        fields["title"],
+                        fields["instructions"],
+                        fields["target_kind"],
+                        fields["target_topic"],
+                        fields["target_course_id"],
+                        fields["target_node"],
+                        fields["due_at"],
+                        fields["max_score"],
+                        1 if is_published else 0,
+                        now,
+                        now,
+                    ),
+                )
+            except sqlite3.IntegrityError as exc:
+                # 授权检查与写入之间班级被删了：应当是 404，不是 500。
+                raise ClassroomNotFound(classroom_id) from exc
             return Assignment.from_row(self._row(connection, assignment_id))
 
     @staticmethod
@@ -573,6 +582,10 @@ class AssignmentService:
         now_text = now.isoformat()
         with self.database.transaction() as connection:
             row = self._row_for_student(connection, assignment_id, student_id)
+            if row["classroom_archived"]:
+                # 班级已结课。这里必须拦住：重新提交会作废既有评分，
+                # 否则学生可以在成绩公布后把老师给的分数清空。
+                raise ClassroomArchived("this classroom is archived")
             due_at = _parse_timestamp(row["due_at"])
             is_late = 1 if (due_at is not None and now > due_at) else 0
 

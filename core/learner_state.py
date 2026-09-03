@@ -313,6 +313,9 @@ class LearnerState:
             store: 自定义状态后端；给出时优先于 state_file
         """
         self.knowledge_points: dict[str, KnowledgePoint] = {}
+        # 本版本解析不了的条目原样留在这里，保存时按原样写回。
+        # 它们不参与任何计算，只是不能被丢掉 —— 见 load() 的说明。
+        self._unparsed: dict[str, Any] = {}
         self.state_file = Path(state_file) if state_file else None
 
         if store is not None:
@@ -345,6 +348,8 @@ class LearnerState:
         Returns:
             KnowledgePoint实例
         """
+        # 本版本重新写入同名知识点时，它取代原样保留的那份旧数据。
+        self._unparsed.pop(name, None)
         if name not in self.knowledge_points:
             self.knowledge_points[name] = KnowledgePoint(
                 name=name,
@@ -427,11 +432,12 @@ class LearnerState:
         }
     
     def to_dict(self) -> dict[str, Any]:
-        """整份状态的可序列化表示"""
-        return {
-            name: kp.to_dict()
-            for name, kp in self.knowledge_points.items()
-        }
+        """整份状态的可序列化表示，含原样保留的未知条目"""
+        data: dict[str, Any] = dict(self._unparsed)
+        data.update(
+            {name: kp.to_dict() for name, kp in self.knowledge_points.items()}
+        )
+        return data
 
     def save(self) -> None:
         """把状态写入配置的后端；未配置后端时静默跳过"""
@@ -440,20 +446,29 @@ class LearnerState:
         self.store.write(self.to_dict())
 
     def load(self) -> None:
-        """从配置的后端读取状态；未配置后端时静默跳过"""
+        """从配置的后端读取状态；未配置后端时静默跳过。
+
+        解析不了的条目（回滚到旧版本后遇到新版本写入的字段，或手工改坏的数据）
+        既不能让整份状态加载失败，**也不能直接丢掉**：每次评分都会整体重写这份
+        状态，丢掉就等于下一次无关操作把它从库里永久抹除。因此这里把它们原样
+        收进 ``_unparsed``，保存时再原样写回。
+        """
         if self.store is None:
             return
         data = self.store.read()
         loaded: dict[str, KnowledgePoint] = {}
+        unparsed: dict[str, Any] = {}
         for name, kp_data in (data or {}).items():
             if not isinstance(kp_data, dict):
+                unparsed[name] = kp_data
                 continue
             try:
                 loaded[name] = KnowledgePoint.from_dict(kp_data)
             except TypeError:
-                # 旧版本写入的多余/缺失字段不应让整份状态无法加载
-                logger.warning("跳过无法解析的知识点状态: %s", name)
+                logger.warning("保留但不解析的知识点状态: %s", name)
+                unparsed[name] = kp_data
         self.knowledge_points = loaded
+        self._unparsed = unparsed
 
     def _auto_save(self) -> None:
         """自动保存（如果配置了持久化后端）"""

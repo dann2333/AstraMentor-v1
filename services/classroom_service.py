@@ -419,27 +419,13 @@ class ClassroomService:
     # ------------------------------------------------------------------
     # 入班 / 退班
     # ------------------------------------------------------------------
-    def _check_join_rate_limit(self, connection: sqlite3.Connection, user_id: str) -> None:
-        row = connection.execute(
-            "SELECT attempts, window_started_at FROM classroom_join_attempts WHERE user_id = ?",
-            (user_id,),
-        ).fetchone()
-        if row is None:
-            return
-        started = _parse_timestamp(row["window_started_at"])
-        now = datetime.now(timezone.utc)
-        window_end = (
-            started + timedelta(minutes=JOIN_ATTEMPT_WINDOW_MINUTES)
-            if started
-            else None
-        )
-        if window_end is None or window_end <= now:
-            return  # 窗口已过期，_record_join_attempt 会重置
-        if int(row["attempts"]) >= MAX_JOIN_ATTEMPTS:
-            raise TooManyJoinAttempts(int((window_end - now).total_seconds()) + 1)
+    def _consume_join_attempt(self, user_id: str) -> None:
+        """先记一次尝试，再判断是否超限 —— 两步必须在同一个写事务里。
 
-    def _record_join_attempt(self, user_id: str) -> None:
-        """记一次失败尝试；窗口过期则重新开窗。独立事务，避免被回滚掉。"""
+        原先是"先查再记"，两次操作分处两个连接：并发打进来的一批请求会同时读到
+        计数 0，于是全部放行，限速形同虚设。现在 ``BEGIN IMMEDIATE`` 持有写锁，
+        自增与判断不可分割，第 11 个请求无论是串行还是并发到达都会被拒。
+        """
         now = datetime.now(timezone.utc)
         with self.database.transaction() as connection:
             row = connection.execute(
@@ -453,7 +439,7 @@ class ClassroomService:
                 or started + timedelta(minutes=JOIN_ATTEMPT_WINDOW_MINUTES) <= now
             )
             attempts = 1 if expired else int(row["attempts"]) + 1
-            window_started = now.isoformat() if expired else row["window_started_at"]
+            window_started = now if expired else started
             connection.execute(
                 """
                 INSERT INTO classroom_join_attempts (user_id, attempts, window_started_at)
@@ -462,8 +448,15 @@ class ClassroomService:
                     attempts = excluded.attempts,
                     window_started_at = excluded.window_started_at
                 """,
-                (user_id, attempts, window_started),
+                (user_id, attempts, window_started.isoformat()),
             )
+            if attempts > MAX_JOIN_ATTEMPTS:
+                window_end = window_started + timedelta(
+                    minutes=JOIN_ATTEMPT_WINDOW_MINUTES
+                )
+                raise TooManyJoinAttempts(
+                    max(1, int((window_end - now).total_seconds()) + 1)
+                )
 
     def _clear_join_attempts(self, connection: sqlite3.Connection, user_id: str) -> None:
         connection.execute(
@@ -471,15 +464,15 @@ class ClassroomService:
         )
 
     def join_by_code(self, student_id: str, code: str) -> Classroom:
-        """凭邀请码入班。格式错误也计入限速，否则限速可被绕过。"""
-        with self.database.connect() as connection:
-            self._check_join_rate_limit(connection, student_id)
+        """凭邀请码入班。
 
-        try:
-            normalized = normalize_join_code(code)
-        except InvalidJoinCode:
-            self._record_join_attempt(student_id)
-            raise
+        每次调用先消耗一个配额，**再**去比对邀请码：格式非法同样计入，
+        否则用非法格式刷接口就能绕过限速。配额用尽时直接 429，
+        此时不会去查库，也就问不出"这个码存不存在"。
+        """
+        self._consume_join_attempt(student_id)
+
+        normalized = normalize_join_code(code)
 
         with self.database.connect() as connection:
             row = connection.execute(
@@ -488,7 +481,6 @@ class ClassroomService:
             ).fetchone()
 
         if row is None:
-            self._record_join_attempt(student_id)
             raise InvalidJoinCode("join code is not valid")
         if row["is_archived"]:
             # 码本身有效，不计入试错；这是一个明确的状态提示。
@@ -503,11 +495,15 @@ class ClassroomService:
             ).fetchone()
             if existing is not None:
                 raise AlreadyEnrolled("already a member of this classroom")
-            connection.execute(
-                "INSERT INTO classroom_members (classroom_id, student_id, joined_at) "
-                "VALUES (?, ?, ?)",
-                (row["id"], student_id, utc_now()),
-            )
+            try:
+                connection.execute(
+                    "INSERT INTO classroom_members (classroom_id, student_id, joined_at) "
+                    "VALUES (?, ?, ?)",
+                    (row["id"], student_id, utc_now()),
+                )
+            except sqlite3.IntegrityError as exc:
+                # 老师刚好在这一刻删了班：这是"码已失效"，不是 500。
+                raise InvalidJoinCode("join code is not valid") from exc
             self._clear_join_attempts(connection, student_id)
             return Classroom.from_row(self._row(connection, row["id"]))
 

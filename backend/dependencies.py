@@ -69,6 +69,11 @@ def get_optional_user(
     用户看到的会是别人的（访客的）数据，而不是一个明确的 401。
     """
     if credentials is None or not credentials.credentials:
+        # HTTPBearer 对 "Authorization: Token xxx" 这类非 Bearer 方案返回 None。
+        # 只看 credentials 就会把它当成访客：客户端以为自己带了身份，
+        # 数据却悄悄写进了共享的访客空间。带了头就必须是合法的 Bearer。
+        if request.headers.get("authorization"):
+            raise _unauthorized("unsupported authorization scheme, expected Bearer")
         if not get_config().auth.allow_anonymous:
             raise _unauthorized("authentication required")
         return None

@@ -27,8 +27,10 @@ MAX_GRAPH_BYTES = 4 * 1024 * 1024
 MAX_STATE_BYTES = 4 * 1024 * 1024
 MAX_DOCUMENT_BYTES = 32 * 1024 * 1024
 
-# owner_id 会被拼进上传目录路径，只允许十六进制账号 id 与预留的访客 id。
+# owner_id 与 doc_id 都会被拼进上传目录路径，必须先收敛成不含分隔符、
+# 不含 ".." 的安全片段，否则一个 doc_id=../<别人的id>/<hash> 就能删掉别人的文件。
 OWNER_ID_PATTERN = re.compile(r"^[A-Za-z0-9_-]{1,64}$")
+DOC_ID_PATTERN = re.compile(r"^[A-Za-z0-9_-]{1,128}$")
 
 
 class PayloadTooLarge(ValueError):
@@ -39,11 +41,23 @@ class OwnerRequired(ValueError):
     """调用方没有给出合法的归属账号。"""
 
 
+class InvalidDocumentId(ValueError):
+    """文档 id 含有路径分隔符或其他不安全字符。"""
+
+
 def validate_owner_id(owner_id: str | None) -> str:
     """校验归属 id，防止它被当作路径片段时逃出上传目录。"""
     candidate = (owner_id or "").strip()
     if not OWNER_ID_PATTERN.fullmatch(candidate):
         raise OwnerRequired("owner id is missing or malformed")
+    return candidate
+
+
+def validate_doc_id(doc_id: str | None) -> str:
+    """校验文档 id。它同时是存储主键和磁盘文件名，必须两处都安全。"""
+    candidate = (doc_id or "").strip()
+    if not DOC_ID_PATTERN.fullmatch(candidate):
+        raise InvalidDocumentId("document id is missing or malformed")
     return candidate
 
 
@@ -180,6 +194,7 @@ class LearningStore:
     # ------------------------------------------------------------------
     def read_document(self, owner_id: str, doc_id: str) -> dict[str, Any] | None:
         owner_id = validate_owner_id(owner_id)
+        doc_id = validate_doc_id(doc_id)
         with self.database.connect() as connection:
             row = connection.execute(
                 "SELECT payload FROM documents WHERE owner_id = ? AND doc_id = ?",
@@ -204,6 +219,7 @@ class LearningStore:
         chunk_count: int = 0,
     ) -> None:
         owner_id = validate_owner_id(owner_id)
+        doc_id = validate_doc_id(doc_id)
         encoded = _dump(payload, MAX_DOCUMENT_BYTES)
         now = utc_now()
         with self.database.transaction() as connection:
@@ -234,6 +250,7 @@ class LearningStore:
 
     def delete_document(self, owner_id: str, doc_id: str) -> bool:
         owner_id = validate_owner_id(owner_id)
+        doc_id = validate_doc_id(doc_id)
         with self.database.transaction() as connection:
             cursor = connection.execute(
                 "DELETE FROM documents WHERE owner_id = ? AND doc_id = ?",
@@ -297,11 +314,28 @@ def owner_upload_dir(owner_id: str, root: Path) -> Path:
     return target
 
 
+def owner_upload_path(owner_id: str, doc_id: str, root: Path, suffix: str = ".pdf") -> Path:
+    """某个账号名下某份文档的磁盘路径。
+
+    这是拼接上传路径的**唯一**入口：owner_id 与 doc_id 都在这里过一遍白名单，
+    最后再确认结果确实落在该账号自己的目录内。少了 doc_id 那一步，
+    ``doc_id=../<别人的账号 id>/<hash>`` 就能读写、删除别人的文件。
+    """
+    directory = owner_upload_dir(owner_id, root)
+    target = (directory / f"{validate_doc_id(doc_id)}{suffix}").resolve()
+    try:
+        target.relative_to(directory)
+    except ValueError as exc:  # pragma: no cover - DOC_ID_PATTERN 已挡住
+        raise InvalidDocumentId("document path escapes the owner directory") from exc
+    return target
+
+
 # 全局默认学习数据仓库（复用默认数据库实例）
 learning_store = LearningStore()
 
 __all__ = [
     "ANONYMOUS_OWNER_ID",
+    "InvalidDocumentId",
     "LearningStore",
     "MAX_DOCUMENT_BYTES",
     "MAX_GRAPH_BYTES",
@@ -311,5 +345,7 @@ __all__ = [
     "SqlLearnerStateStore",
     "learning_store",
     "owner_upload_dir",
+    "owner_upload_path",
+    "validate_doc_id",
     "validate_owner_id",
 ]

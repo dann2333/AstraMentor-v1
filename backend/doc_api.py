@@ -18,9 +18,11 @@ from fastapi.responses import StreamingResponse
 from services.pdf_parser import parse_pdf, DocumentContext, get_chunks_text
 from services.learning_service import LearningService
 from services.learning_store import (
+    InvalidDocumentId,
     PayloadTooLarge,
     learning_store,
-    owner_upload_dir,
+    owner_upload_path,
+    validate_doc_id,
 )
 from backend.api import build_streaming_response
 from backend.dependencies import get_owner_id
@@ -69,8 +71,17 @@ def _cache_put(owner_id: str, doc_context: DocumentContext) -> None:
         _doc_cache.popitem(last=False)
 
 
+def _safe_doc_id(doc_id: str) -> str:
+    """把畸形的 doc_id 挡成 404，而不是让它一路走到文件系统。"""
+    try:
+        return validate_doc_id(doc_id)
+    except InvalidDocumentId as exc:
+        raise HTTPException(status_code=404, detail="文档未找到") from exc
+
+
 def _get_doc_context(owner_id: str, doc_id: str) -> DocumentContext:
     """取出当前账号的文档上下文；命中不了缓存就回落到数据库"""
+    doc_id = _safe_doc_id(doc_id)
     key = (owner_id, doc_id)
     cached = _doc_cache.get(key)
     if cached is not None:
@@ -124,7 +135,7 @@ def _doc_topic(doc_id: str) -> str:
 
 def _get_doc_service(owner_id: str, doc_id: str) -> LearningService:
     """为文档模式创建 LearningService 实例，按 (账号, doc_id) 隔离状态"""
-    return LearningService(topic=_doc_topic(doc_id), owner_id=owner_id)
+    return LearningService(topic=_doc_topic(_safe_doc_id(doc_id)), owner_id=owner_id)
 
 
 def _load_doc_graph(owner_id: str, doc_id: str) -> dict | None:
@@ -216,9 +227,9 @@ async def upload_document(
     _cache_put(owner_id, doc_context)
 
     # 原始 PDF 存在该账号自己的目录下，别人既读不到也删不掉
-    upload_dir = owner_upload_dir(owner_id, _UPLOAD_ROOT)
-    upload_dir.mkdir(parents=True, exist_ok=True)
-    (upload_dir / f"{doc_context.doc_id}.pdf").write_bytes(file_bytes)
+    pdf_path = owner_upload_path(owner_id, doc_context.doc_id, _UPLOAD_ROOT)
+    pdf_path.parent.mkdir(parents=True, exist_ok=True)
+    pdf_path.write_bytes(file_bytes)
 
     logger.info(
         "✅ 文档上传成功: %s → doc_id=%s (owner=%s)",
@@ -755,6 +766,7 @@ async def doc_delete_graph(
     owner_id: str = Depends(get_owner_id),
 ):
     """删除当前账号下该文档的星图、上下文与原始 PDF"""
+    doc_id = _safe_doc_id(doc_id)
     service = _get_doc_service(owner_id, doc_id)
     service.delete_graph(topic=_doc_topic(doc_id))
 
@@ -762,7 +774,7 @@ async def doc_delete_graph(
     _doc_cache.pop((owner_id, doc_id), None)
 
     # 只删自己目录下的文件；其他账号上传的同一份 PDF 不受影响
-    pdf_file = owner_upload_dir(owner_id, _UPLOAD_ROOT) / f"{doc_id}.pdf"
+    pdf_file = owner_upload_path(owner_id, doc_id, _UPLOAD_ROOT)
     if pdf_file.exists():
         pdf_file.unlink()
         logger.info("已删除文件: %s", pdf_file)

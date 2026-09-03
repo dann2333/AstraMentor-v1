@@ -33,9 +33,10 @@ from typing import Any
 
 from services.database import ANONYMOUS_OWNER_ID, Database, default_database
 from services.learning_store import (
+    InvalidDocumentId,
     LearningStore,
     PayloadTooLarge,
-    owner_upload_dir,
+    owner_upload_path,
 )
 from services.user_data_repository import (
     InvalidSessionId,
@@ -154,9 +155,6 @@ def import_legacy_documents(
 ) -> int:
     if not root.is_dir():
         return 0
-    target_dir = owner_upload_dir(ANONYMOUS_OWNER_ID, upload_root)
-    target_dir.mkdir(parents=True, exist_ok=True)
-
     imported = 0
     for path in sorted(root.glob("*_context.json")):
         payload = _read_json(path)
@@ -174,14 +172,19 @@ def import_legacy_documents(
                 total_pages=int(payload.get("total_pages") or 0),
                 chunk_count=len(payload.get("chunks") or []),
             )
-        except (PayloadTooLarge, TypeError, ValueError) as exc:
+            # doc_id 来自磁盘上的文件名，同样要过一遍白名单再拼路径。
+            target = owner_upload_path(
+                ANONYMOUS_OWNER_ID, doc_id, upload_root
+            )
+        except (PayloadTooLarge, InvalidDocumentId, TypeError, ValueError) as exc:
             logger.warning("跳过文档 %s: %s", path.name, exc)
             continue
 
         pdf = root / f"{doc_id}.pdf"
         if pdf.exists():
             try:
-                shutil.copy2(pdf, target_dir / f"{doc_id}.pdf")
+                target.parent.mkdir(parents=True, exist_ok=True)
+                shutil.copy2(pdf, target)
             except OSError as exc:
                 logger.warning("原始 PDF 复制失败 %s: %s", pdf, exc)
         imported += 1
