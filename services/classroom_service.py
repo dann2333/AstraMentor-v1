@@ -458,6 +458,29 @@ class ClassroomService:
                     max(1, int((window_end - now).total_seconds()) + 1)
                 )
 
+    _REFUND_SQL = (
+        "UPDATE classroom_join_attempts SET attempts = MAX(0, attempts - 1) "
+        "WHERE user_id = ?"
+    )
+
+    def _refund_join_attempt(
+        self, user_id: str, connection: sqlite3.Connection | None = None
+    ) -> None:
+        """退回一次配额。
+
+        只在**码本身是有效的**时候调用：班级已归档、已经在班里、那是自己的班。
+        这些都不是猜码，不该把学生锁在门外。退回也不泄露任何东西 —— 调用方
+        既然拿着一个有效的码，就已经知道它有效了。
+
+        已经在事务里时必须把那条连接传进来：另开一个 BEGIN IMMEDIATE 会和
+        外层持有的写锁互相等待，直到 busy_timeout 超时失败。
+        """
+        if connection is not None:
+            connection.execute(self._REFUND_SQL, (user_id,))
+            return
+        with self.database.transaction() as owned:
+            owned.execute(self._REFUND_SQL, (user_id,))
+
     def _clear_join_attempts(self, connection: sqlite3.Connection, user_id: str) -> None:
         connection.execute(
             "DELETE FROM classroom_join_attempts WHERE user_id = ?", (user_id,)
@@ -483,29 +506,39 @@ class ClassroomService:
         if row is None:
             raise InvalidJoinCode("join code is not valid")
         if row["is_archived"]:
-            # 码本身有效，不计入试错；这是一个明确的状态提示。
+            self._refund_join_attempt(student_id)
             raise ClassroomArchived("this classroom is archived")
         if row["teacher_id"] == student_id:
+            self._refund_join_attempt(student_id)
             raise CannotEnrollSelf("a teacher cannot enrol in their own classroom")
 
+        # NOTE: "已经在班里"要在事务之外抛。transaction() 在异常时整体回滚，
+        # 在事务里退配额等于白退。
+        already_enrolled = False
         with self.database.transaction() as connection:
             existing = connection.execute(
                 "SELECT 1 FROM classroom_members WHERE classroom_id = ? AND student_id = ?",
                 (row["id"], student_id),
             ).fetchone()
             if existing is not None:
-                raise AlreadyEnrolled("already a member of this classroom")
-            try:
-                connection.execute(
-                    "INSERT INTO classroom_members (classroom_id, student_id, joined_at) "
-                    "VALUES (?, ?, ?)",
-                    (row["id"], student_id, utc_now()),
-                )
-            except sqlite3.IntegrityError as exc:
-                # 老师刚好在这一刻删了班：这是"码已失效"，不是 500。
-                raise InvalidJoinCode("join code is not valid") from exc
-            self._clear_join_attempts(connection, student_id)
-            return Classroom.from_row(self._row(connection, row["id"]))
+                already_enrolled = True
+            else:
+                try:
+                    connection.execute(
+                        "INSERT INTO classroom_members "
+                        "(classroom_id, student_id, joined_at) VALUES (?, ?, ?)",
+                        (row["id"], student_id, utc_now()),
+                    )
+                except sqlite3.IntegrityError as exc:
+                    # 老师刚好在这一刻删了班：这是"码已失效"，不是 500。
+                    raise InvalidJoinCode("join code is not valid") from exc
+                self._clear_join_attempts(connection, student_id)
+                joined = Classroom.from_row(self._row(connection, row["id"]))
+
+        if already_enrolled:
+            self._refund_join_attempt(student_id)
+            raise AlreadyEnrolled("already a member of this classroom")
+        return joined
 
     def leave_classroom(self, classroom_id: str, student_id: str) -> None:
         with self.database.transaction() as connection:

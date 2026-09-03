@@ -27,6 +27,9 @@ MAX_GRAPH_BYTES = 4 * 1024 * 1024
 MAX_STATE_BYTES = 4 * 1024 * 1024
 MAX_DOCUMENT_BYTES = 32 * 1024 * 1024
 
+# 原始上传文件的根目录，其下按账号分子目录。
+UPLOAD_ROOT = Path("user_data") / "uploads"
+
 # owner_id 与 doc_id 都会被拼进上传目录路径，必须先收敛成不含分隔符、
 # 不含 ".." 的安全片段，否则一个 doc_id=../<别人的id>/<hash> 就能删掉别人的文件。
 OWNER_ID_PATTERN = re.compile(r"^[A-Za-z0-9_-]{1,64}$")
@@ -314,6 +317,32 @@ def owner_upload_dir(owner_id: str, root: Path) -> Path:
     return target
 
 
+def purge_owner_uploads(owner_id: str, root: Path) -> int:
+    """删掉某个账号上传目录下的全部文件，返回删除的文件数。
+
+    数据库里的行随外键级联清理，磁盘上的原始 PDF 不会 —— 删号后它们会变成
+    没有任何行指向、也没有任何接口能访问的孤儿文件，一直占着空间。
+    """
+    owner_id = validate_owner_id(owner_id)
+    resolved_root = root.resolve() if root.exists() else root
+    directory = resolved_root / owner_id
+    if not directory.is_dir():
+        return 0
+    removed = 0
+    for path in directory.iterdir():
+        if path.is_file():
+            try:
+                path.unlink()
+                removed += 1
+            except OSError:  # pragma: no cover - 权限问题不该挡住删号
+                pass
+    try:
+        directory.rmdir()
+    except OSError:  # pragma: no cover - 目录非空时保留
+        pass
+    return removed
+
+
 def owner_upload_path(owner_id: str, doc_id: str, root: Path, suffix: str = ".pdf") -> Path:
     """某个账号名下某份文档的磁盘路径。
 
@@ -335,6 +364,7 @@ learning_store = LearningStore()
 
 __all__ = [
     "ANONYMOUS_OWNER_ID",
+    "UPLOAD_ROOT",
     "InvalidDocumentId",
     "LearningStore",
     "MAX_DOCUMENT_BYTES",
@@ -346,6 +376,7 @@ __all__ = [
     "learning_store",
     "owner_upload_dir",
     "owner_upload_path",
+    "purge_owner_uploads",
     "validate_doc_id",
     "validate_owner_id",
 ]

@@ -121,7 +121,12 @@ def normalize_due_at(due_at: str | None) -> str | None:
     parsed = _parse_timestamp(due_at)
     if parsed is None:
         raise ValidationError("due_at must be an ISO-8601 timestamp")
-    return parsed.astimezone(timezone.utc).isoformat()
+    try:
+        # 换算到 UTC 时，year 1 或 9999 加上 ±14 小时偏移会溢出 datetime 的取值范围。
+        # 这仍然是"客户端给了个不能用的时间"，必须是 422 而不是 500。
+        return parsed.astimezone(timezone.utc).isoformat()
+    except (OverflowError, OSError, ValueError) as exc:
+        raise ValidationError("due_at is outside the supported date range") from exc
 
 
 def normalize_max_score(max_score: float | None) -> float:

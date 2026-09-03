@@ -43,6 +43,11 @@ export function authorizationHeader(): Record<string, string> {
     return token ? { Authorization: `Bearer ${token}` } : {};
 }
 
+/** fetch 调用方收到 401 时调用，走与 axios 拦截器同一条退出登录路径。 */
+export function notifyUnauthorized(): void {
+    onUnauthorized();
+}
+
 /** 由 auth 层注入，保持 client 对存储方式无感知。 */
 export function configureAuthBridge(options: {
     readAccessToken: () => string | null;

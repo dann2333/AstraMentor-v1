@@ -139,7 +139,10 @@ function TeacherView() {
 
     const openSubmissions = (assignmentId: string) =>
         run(async () => {
+            // 先清空：否则加载期间（以及请求失败后）面板会顶着新作业的标题，
+            // 列出的却是上一份作业的学生和答案，保存评分会打到错误的作业上。
             setOpenAssignmentId(assignmentId);
+            setSubmissions([]);
             setSubmissions(await classroomApi.listSubmissions(assignmentId));
         }, '无法加载提交');
 

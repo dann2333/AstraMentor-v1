@@ -36,6 +36,7 @@ from services.learning_store import (
     InvalidDocumentId,
     LearningStore,
     PayloadTooLarge,
+    UPLOAD_ROOT,
     owner_upload_path,
 )
 from services.user_data_repository import (
@@ -50,7 +51,6 @@ logger = logging.getLogger(__name__)
 LEGACY_SESSION_DIR = Path("user_data") / "sessions"
 LEGACY_DATA_DIR = Path("test_data")
 LEGACY_UPLOAD_DIR = LEGACY_DATA_DIR / "uploads"
-UPLOAD_ROOT = Path("user_data") / "uploads"
 
 IMPORTED_SUFFIX = ".imported"
 

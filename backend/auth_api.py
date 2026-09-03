@@ -27,6 +27,7 @@ from services.account_service import (
     UserNotFound,
     ValidationError,
 )
+from services.learning_store import UPLOAD_ROOT, purge_owner_uploads
 
 
 auth_router = APIRouter(prefix="/auth", tags=["auth"])
@@ -185,3 +186,6 @@ def delete_account(
         service.delete_user(user.id)
     except UserNotFound as exc:
         raise HTTPException(status_code=404, detail="account not found") from exc
+    # 数据库里的行随外键级联清理，磁盘上的原始 PDF 不会：一并删掉，
+    # 否则它们会变成没有任何行指向、也访问不到的孤儿文件。
+    purge_owner_uploads(user.id, UPLOAD_ROOT)

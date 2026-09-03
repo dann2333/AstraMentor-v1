@@ -1,4 +1,4 @@
-import { API_BASE_URL, authorizationHeader } from './client';
+import { API_BASE_URL, authorizationHeader, notifyUnauthorized } from './client';
 import { ApiRequestError } from './errors';
 
 export type StreamEventName =
@@ -35,6 +35,11 @@ export async function streamLearning(
     signal,
   });
   if (!response.ok) {
+    if (response.status === 401) {
+      // SSE 绕开了 axios 拦截器，令牌失效时同样要退出登录，
+      // 否则头部还显示着用户名，用户只会看到一条看不懂的报错。
+      notifyUnauthorized();
+    }
     const contentType = response.headers.get('content-type') || '';
     const rawPayload = await response.text();
     let payload: unknown = rawPayload;

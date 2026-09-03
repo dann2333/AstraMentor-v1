@@ -8,7 +8,6 @@
 import logging
 import uuid
 from collections import OrderedDict
-from pathlib import Path
 
 from pydantic import ValidationError
 
@@ -20,6 +19,7 @@ from services.learning_service import LearningService
 from services.learning_store import (
     InvalidDocumentId,
     PayloadTooLarge,
+    UPLOAD_ROOT,
     learning_store,
     owner_upload_path,
     validate_doc_id,
@@ -59,8 +59,9 @@ doc_router = APIRouter()
 _DOC_CACHE_MAX_ENTRIES = 32
 _doc_cache: "OrderedDict[tuple[str, str], DocumentContext]" = OrderedDict()
 
-# NOTE: 上传文件存储根目录，其下按账号分子目录
-_UPLOAD_ROOT = Path("user_data") / "uploads"
+# NOTE: 上传文件存储根目录（定义在 learning_store，注销账号时也要用到）。
+# 保留这个模块级别名是为了让测试能够 patch 掉它。
+_UPLOAD_ROOT = UPLOAD_ROOT
 
 
 def _cache_put(owner_id: str, doc_context: DocumentContext) -> None:

@@ -14,6 +14,7 @@ from backend.user_data_api import user_data_router
 from backend.classroom_api import admin_router, classroom_router
 from backend.assignment_api import assignment_router
 from rag.errors import CourseIndexNotReadyError
+from services.learning_store import PayloadTooLarge
 from services.legacy_import import import_legacy_data
 
 # NOTE: 配置日志级别，确保项目模块的 INFO 日志可见
@@ -58,6 +59,19 @@ async def lifespan(_app: FastAPI):
 
 app = FastAPI(title="AstraMentor API", version="1.0.0", lifespan=lifespan)
 
+
+
+@app.exception_handler(PayloadTooLarge)
+async def payload_too_large_handler(
+    _request: Request, exc: PayloadTooLarge
+) -> JSONResponse:
+    """存储体积超限一律 413。
+
+    学习者状态是在业务代码深处由 ``_auto_save()`` 写入的，超限异常会从任意一个
+    学习接口冒出来。逐个路由去 try 既容易漏，也会把这条规则散开；在这里兜一次，
+    任何路径下的超大写入都得到同一个明确答复，而不是一个 500。
+    """
+    return JSONResponse(status_code=413, content={"detail": str(exc)})
 
 
 @app.exception_handler(CourseIndexNotReadyError)

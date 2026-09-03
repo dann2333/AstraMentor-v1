@@ -21,6 +21,9 @@ from core.learner_state import LearnerState
 from services.account_service import AccountService
 from services.assignment_service import AssignmentService, ClassroomArchived
 from services.classroom_service import (
+    AlreadyEnrolled,
+    CannotEnrollSelf,
+    ClassroomArchived as ClassroomArchivedError,
     ClassroomService,
     InvalidJoinCode,
     MAX_JOIN_ATTEMPTS,
@@ -365,6 +368,136 @@ class LearnerStatePreservationTests(unittest.TestCase):
         stored = self.store.read_learner_state(ANONYMOUS_OWNER_ID, self.scope)
         self.assertEqual(stored["递归"]["target_mastery"], 0.7)
         self.assertNotIn("unknown_field", stored["递归"])
+
+
+class JoinQuotaFairnessTests(unittest.TestCase):
+    """只有猜错的码才烧配额。正确的码重复提交不该把学生锁在门外。"""
+
+    def setUp(self) -> None:
+        self.temp = tempfile.TemporaryDirectory()
+        self.database = Database(Path(self.temp.name) / "astramentor.db")
+        self.accounts = AccountService(self.database)
+        self.service = ClassroomService(self.database)
+        self.teacher = self.accounts.register(
+            "teacher1", "correct-horse-1", role=ROLE_TEACHER
+        )
+        self.student = self.accounts.register("student1", "correct-horse-2")
+        self.classroom = self.service.create_classroom(self.teacher.id, "算法入门")
+
+    def tearDown(self) -> None:
+        self.temp.cleanup()
+
+    def test_resubmitting_a_code_you_already_used_never_locks_you_out(self) -> None:
+        self.service.join_by_code(self.student.id, self.classroom.join_code)
+        for index in range(MAX_JOIN_ATTEMPTS * 3):
+            with self.subTest(attempt=index):
+                with self.assertRaises(AlreadyEnrolled):
+                    self.service.join_by_code(
+                        self.student.id, self.classroom.join_code
+                    )
+
+    def test_an_archived_classrooms_code_does_not_burn_quota(self) -> None:
+        self.service.update_classroom(
+            self.classroom.id, self.teacher.id, is_archived=True
+        )
+        for index in range(MAX_JOIN_ATTEMPTS * 2):
+            with self.subTest(attempt=index):
+                with self.assertRaises(ClassroomArchivedError):
+                    self.service.join_by_code(
+                        self.student.id, self.classroom.join_code
+                    )
+
+    def test_a_teacher_retrying_their_own_code_does_not_burn_quota(self) -> None:
+        for index in range(MAX_JOIN_ATTEMPTS * 2):
+            with self.subTest(attempt=index):
+                with self.assertRaises(CannotEnrollSelf):
+                    self.service.join_by_code(
+                        self.teacher.id, self.classroom.join_code
+                    )
+
+    def test_wrong_codes_are_still_rate_limited(self) -> None:
+        for index in range(MAX_JOIN_ATTEMPTS):
+            with self.assertRaises(InvalidJoinCode):
+                self.service.join_by_code(self.student.id, f"ZZZZZZ{index:02d}")
+        with self.assertRaises(TooManyJoinAttempts):
+            self.service.join_by_code(self.student.id, "ZZZZZZ99")
+
+    def test_refunds_do_not_open_a_hole_in_the_limiter(self) -> None:
+        """交替提交正确与错误的码，也不能靠退款把猜测配额刷回来。
+
+        配额一旦被真正的猜测耗尽，连正确的码都会被拒 —— 这是对的：
+        限速拦的是"这个账号在猜"，不是"这一次猜得对不对"。
+        """
+        self.service.join_by_code(self.student.id, self.classroom.join_code)
+        wrong = 0
+        limited = False
+        for index in range(MAX_JOIN_ATTEMPTS * 3):
+            for code, expected in (
+                (self.classroom.join_code, AlreadyEnrolled),
+                (f"ZZZZZZ{index:02d}", InvalidJoinCode),
+            ):
+                try:
+                    self.service.join_by_code(self.student.id, code)
+                except TooManyJoinAttempts:
+                    limited = True
+                except expected:
+                    if expected is InvalidJoinCode:
+                        wrong += 1
+                if limited:
+                    break
+            if limited:
+                break
+        self.assertTrue(limited, "交替提交没有触发限速")
+        self.assertLessEqual(wrong, MAX_JOIN_ATTEMPTS)
+
+
+class AccountDeletionCleanupTests(unittest.TestCase):
+    """删号后磁盘上不该留下访问不到的孤儿 PDF。"""
+
+    def setUp(self) -> None:
+        self.temp = tempfile.TemporaryDirectory()
+        self.root = Path(self.temp.name)
+        self.database = Database(self.root / "astramentor.db")
+        self.accounts = AccountService(self.database, token_ttl_hours=1)
+        self.store = LearningStore(self.database)
+        app.dependency_overrides[get_account_service] = lambda: self.accounts
+        self.patches = [
+            patch("backend.auth_api.UPLOAD_ROOT", self.root / "uploads"),
+        ]
+        for item in self.patches:
+            item.start()
+        self.client = TestClient(app)
+
+    def tearDown(self) -> None:
+        for item in reversed(self.patches):
+            item.stop()
+        app.dependency_overrides.clear()
+        self.temp.cleanup()
+
+    def test_deleting_the_account_removes_its_uploaded_files(self) -> None:
+        registered = self.client.post(
+            "/api/auth/register",
+            json={"username": "alice1", "password": "correct-horse-battery"},
+        ).json()
+        headers = {"Authorization": f"Bearer {registered['access_token']}"}
+        owner_id = registered["user"]["id"]
+
+        pdf = owner_upload_path(owner_id, SHARED_DOC_ID, self.root / "uploads")
+        pdf.parent.mkdir(parents=True, exist_ok=True)
+        pdf.write_bytes(b"%PDF-1.4")
+        self.store.write_document(owner_id, SHARED_DOC_ID, {"doc_id": SHARED_DOC_ID})
+
+        response = self.client.request(
+            "DELETE",
+            "/api/auth/me",
+            json={"password": "correct-horse-battery"},
+            headers=headers,
+        )
+        self.assertEqual(response.status_code, 204, response.text)
+
+        self.assertIsNone(self.store.read_document(owner_id, SHARED_DOC_ID))
+        self.assertFalse(pdf.exists(), "删号后 PDF 仍留在磁盘上")
+        self.assertFalse(pdf.parent.exists())
 
 
 if __name__ == "__main__":
