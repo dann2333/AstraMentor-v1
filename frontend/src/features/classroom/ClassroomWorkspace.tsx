@@ -55,15 +55,15 @@ export function ClassroomWorkspace({
                     <DialogTitle>班级与作业</DialogTitle>
                     <DialogDescription>
                         {isTeacher
-                            ? '管理你的班级、布置作业并批改学生提交。'
-                            : '加入班级、查看作业并提交你的答案。'}
+                            ? '班级、作业和批改都在这里。'
+                            : '用老师给的码入班，作业在下面交。'}
                     </DialogDescription>
                 </DialogHeader>
 
                 {!isAuthenticated ? (
                     <div className="space-y-4 py-6 text-center">
                         <p className="text-sm text-muted-foreground">
-                            班级与作业需要登录后使用。访客数据是共享的，无法用来记名。
+                            班级要登录才能用 —— 访客身份是共用的，记不到人头上。
                         </p>
                         <Button onClick={onRequestLogin}>去登录</Button>
                     </div>
@@ -150,7 +150,7 @@ function TeacherView() {
 
     return (
         <div className="space-y-4">
-            {error && <p className="text-sm text-red-500" role="alert">{error}</p>}
+            {error && <p className="text-sm text-destructive" role="alert">{error}</p>}
 
             <div className="flex flex-wrap items-end gap-2">
                 <div className="flex-1 min-w-[200px] space-y-1">
@@ -158,7 +158,7 @@ function TeacherView() {
                     <Input
                         id="new-class-name"
                         value={newClassName}
-                        placeholder="例如：2026 春 算法入门"
+                        placeholder="比如 2026 春 算法入门"
                         maxLength={80}
                         onChange={(event) => setNewClassName(event.target.value)}
                     />
@@ -179,7 +179,7 @@ function TeacherView() {
             </div>
 
             {classrooms.length === 0 ? (
-                <p className="text-sm text-muted-foreground">还没有班级，先建一个吧。</p>
+                <p className="text-sm text-muted-foreground">还没有班级，先建一个。</p>
             ) : (
                 <div className="flex flex-wrap gap-2">
                     {classrooms.map((item) => (
@@ -232,7 +232,7 @@ function TeacherView() {
                         />
                         <Textarea
                             value={newAssignment.instructions}
-                            placeholder="作业要求（可选）"
+                            placeholder="要求写在这里（可选）"
                             maxLength={8000}
                             onChange={(event) =>
                                 setNewAssignment((prev) => ({
@@ -311,7 +311,7 @@ function TeacherView() {
                                 </li>
                             ))}
                             {assignments.length === 0 && (
-                                <li className="text-sm text-muted-foreground">还没有作业。</li>
+                                <li className="text-sm text-muted-foreground">这个班还没布置作业。</li>
                             )}
                         </ul>
                     </ScrollArea>
@@ -358,7 +358,7 @@ function TeacherView() {
                                 </li>
                             ))}
                             {progress.length === 0 && (
-                                <li className="text-muted-foreground">还没有学生加入。</li>
+                                <li className="text-muted-foreground">还没有学生入班。</li>
                             )}
                         </ul>
                     </div>
@@ -389,7 +389,7 @@ function GradingList({
                 《{assignment.title}》的提交（满分 {assignment.max_score}）
             </p>
             {submissions.length === 0 && (
-                <p className="text-sm text-muted-foreground">还没有人提交。</p>
+                <p className="text-sm text-muted-foreground">还没人交。</p>
             )}
             {submissions.map((item) => {
                 const draft = drafts[item.student_id] ?? {
@@ -401,7 +401,7 @@ function GradingList({
                         <p className="text-sm font-medium">
                             {item.student_display_name || item.student_username}
                             {item.is_late && (
-                                <span className="ml-2 text-xs text-amber-600">迟交</span>
+                                <span className="ml-2 text-xs text-warning">迟交</span>
                             )}
                         </p>
                         <p className="whitespace-pre-wrap break-words text-sm">{item.content}</p>
@@ -506,8 +506,8 @@ function StudentView() {
 
     return (
         <div className="space-y-4">
-            {error && <p className="text-sm text-red-500" role="alert">{error}</p>}
-            {notice && <p className="text-sm text-emerald-600">{notice}</p>}
+            {error && <p className="text-sm text-destructive" role="alert">{error}</p>}
+            {notice && <p className="text-sm text-success">{notice}</p>}
 
             <div className="flex flex-wrap items-end gap-2">
                 <div className="flex-1 min-w-[180px] space-y-1">
@@ -515,7 +515,7 @@ function StudentView() {
                     <Input
                         id="join-code"
                         value={joinCode}
-                        placeholder="向老师索取 8 位邀请码"
+                        placeholder="老师给的 8 位码"
                         maxLength={16}
                         onChange={(event) => setJoinCode(event.target.value)}
                     />
@@ -538,7 +538,7 @@ function StudentView() {
             <div>
                 <p className="mb-1 text-sm font-medium">我的班级</p>
                 {classrooms.length === 0 ? (
-                    <p className="text-sm text-muted-foreground">还没有加入任何班级。</p>
+                    <p className="text-sm text-muted-foreground">还没入班。</p>
                 ) : (
                     <ul className="space-y-1 text-sm">
                         {classrooms.map((item) => (
@@ -605,13 +605,13 @@ function StudentView() {
                                             </p>
                                         )}
                                     {item.my_submission?.is_late && (
-                                        <p className="text-xs text-amber-600">这次是迟交</p>
+                                        <p className="text-xs text-warning">这次是迟交</p>
                                     )}
 
                                     <Textarea
                                         value={draft}
                                         maxLength={40000}
-                                        placeholder="在这里写下你的答案"
+                                        placeholder="写下你的答案"
                                         onChange={(event) =>
                                             setDrafts((prev) => ({
                                                 ...prev,
@@ -631,7 +631,7 @@ function StudentView() {
                                         }
                                         title={
                                             item.my_submission
-                                                ? '重新提交会清空老师已给的分数'
+                                                ? '重交会把老师给的分数清掉'
                                                 : undefined
                                         }
                                     >
@@ -641,7 +641,7 @@ function StudentView() {
                             );
                         })}
                         {assignments.length === 0 && (
-                            <li className="text-sm text-muted-foreground">暂时没有作业。</li>
+                            <li className="text-sm text-muted-foreground">暂时没作业。</li>
                         )}
                     </ul>
                 </ScrollArea>

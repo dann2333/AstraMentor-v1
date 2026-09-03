@@ -28,7 +28,10 @@ const DialogOverlay = React.forwardRef<
     ref={ref}
     data-glass-overlay=""
     className={cn(
-      "fixed inset-0 z-50 bg-black/45 backdrop-blur-md backdrop-saturate-150",
+      // 遮罩要把背景揉成一片色晕，而不只是压暗：模态玻璃本身很薄，
+      // 背景若还留着可辨认的形状，文字就压在一片花色上读不清。
+      // iOS 的 sheet 也是这么做的 —— 大幅模糊 + 压暗在先，薄玻璃在后。
+      "fixed inset-0 z-50 bg-[hsl(var(--glass-scrim))] backdrop-blur-[32px] backdrop-saturate-125",
       className
     )}
     {...props}

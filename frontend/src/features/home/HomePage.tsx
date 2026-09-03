@@ -1,9 +1,8 @@
 import type { ReactNode } from 'react';
-import { ArrowRight, FileUp, Sparkles, History, Play, Trash2 } from 'lucide-react';
+import { ArrowRight, FileUp, Route, History, Play, Trash2 } from 'lucide-react';
 import type { Course, CourseIndexRecovery } from '../../types';
 import type { GraphSession } from '../sidebar/HistorySidebar';
 import { CourseCatalog } from '../courses/CourseCatalog';
-import StarBackground from './StarBackground';
 
 interface HomePageProps {
   /** 头部右上角的账号入口，由 App 注入以复用同一份登录状态。 */
@@ -31,11 +30,10 @@ export default function HomePage({
 }: HomePageProps) {
   return (
     <div className="astra-home">
-      <StarBackground />
       <header className="astra-home__header glass glass--regular glass--grain glass--refract glass--lit">
         <div className="astra-brand">
           <img src="/logo.png" alt="AstraMentor" />
-          <div><strong>ASTRAMENTOR</strong><span>职业教育智能学习星图</span></div>
+          <div><strong>ASTRAMENTOR</strong><span>职业课程知识图谱</span></div>
         </div>
         <div className="astra-home__actions-top">
           {accountMenu}
@@ -47,16 +45,16 @@ export default function HomePage({
         <div className="astra-home__content">
         <section className="astra-hero">
           <div className="astra-hero__copy">
-            <div className="pixel-kicker glass glass--thin glass--grain glass--lit"><Sparkles size={14} /> AI + 引导式学习</div>
-            <h1>把职业课程<br /><em>变成可探索的星图</em></h1>
-            <p>从教材出发生成知识路径。每次讲解、检测和进阶都有依据，让你看得见自己正在掌握什么。</p>
+            <div className="pixel-kicker glass glass--thin glass--grain glass--lit"><Route size={14} /> 讲一步，考一步</div>
+            <h1>学到哪了<br /><em>图上一眼看清</em></h1>
+            <p>一门课有多少内容，星图按教材铺开，不是凭空编的。讲完一步出一题，答对了才往下走，每个节点的掌握度跟着变。</p>
             <div className="astra-hero__actions">
               <button type="button" className="pixel-button pixel-button--primary glass glass--thin glass--grain glass--lit glass--refract glass--tint-primary" onClick={onStart}>
-                自由探索 <ArrowRight size={16} />
+                自己选主题 <ArrowRight size={16} />
               </button>
               {onUploadDoc && (
                 <button type="button" className="pixel-button glass glass--thin glass--grain glass--lit glass--refract" onClick={onUploadDoc}>
-                  <FileUp size={16} /> 上传资料
+                  <FileUp size={16} /> 上传 PDF
                 </button>
               )}
             </div>
@@ -76,7 +74,7 @@ export default function HomePage({
         <section className="course-section">
           <div className="course-section__heading">
             <div><span className="section-index">01</span><h2>选择一门课程</h2></div>
-            <p>教材优先 · 章节引用 · 本地可运行</p>
+            <p>内容都来自教材，答案会标出处</p>
           </div>
           <CourseCatalog
             onSelectCourse={onSelectCourse}
@@ -89,11 +87,11 @@ export default function HomePage({
         <aside className="home-history glass glass--regular glass--grain glass--refract" aria-label="历史学习">
           <div className="home-history__heading">
             <History size={17} />
-            <div><strong>历史学习</strong><span>从上次进度继续</span></div>
+            <div><strong>最近在学</strong><span>接着上次的进度</span></div>
           </div>
           <div className="home-history__list">
             {sessions.length === 0 ? (
-              <div className="home-history__empty">完成一次星图学习后，记录会自动保存在这里。</div>
+              <div className="home-history__empty">还没有记录。学过的星图会留在这儿。</div>
             ) : sessions.slice(0, 8).map((session) => (
               <article className="home-history__card" key={session.id}>
                 <div className="home-history__meta">

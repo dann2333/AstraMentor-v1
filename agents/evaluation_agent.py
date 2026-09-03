@@ -217,22 +217,21 @@ class EvaluationAgent:
 
         # 目标进度
         if current >= target:
-            goal_text = "🎉 恭喜！你已达到学习目标！"
+            goal_text = "已经到目标掌握度了。"
         else:
             remaining = target - current
-            goal_text = f"🎯 距离目标还差 {remaining:.1%}"
+            goal_text = f"离目标还差 {remaining:.1%}。"
 
         # 步骤进度（如果有教学计划）
         step_text = ""
         if knowledge_point.teaching_plan:
             step_idx = knowledge_point.current_step
             total = len(knowledge_point.teaching_plan)
-            step_text = f"\n📋 教学进度: 第 {step_idx + 1} 步 / 共 {total} 步"
+            step_text = f"　第 {step_idx + 1} 步 / 共 {total} 步。"
 
-        return f"""**本次表现**: {score_desc}（{evaluation_result.score:.2f}分）
+        return f"""**{score_desc}**（{evaluation_result.score:.2f} 分）
+
 {evaluation_result.feedback}
 
-**学习进度**: 
-当前掌握度: {current:.1%} | 目标: {target:.1%}
-{goal_text}{step_text}
+当前掌握度 {current:.1%}，目标 {target:.1%}。{goal_text}{step_text}
 """.strip()

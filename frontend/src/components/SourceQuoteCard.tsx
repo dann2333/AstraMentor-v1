@@ -19,15 +19,13 @@ export function SourceQuoteCard({ sourceText, pageInfo, heading }: SourceQuoteCa
   if (!sourceText) return null;
 
   return (
-    <div className="my-3 rounded-lg border border-purple-500/30 bg-purple-500/5 overflow-hidden">
+    <div className="my-3 overflow-hidden rounded-[var(--glass-radius-md)] border border-accent/30 bg-accent/[0.06]">
       {/* 卡片标题栏 */}
-      <div className="flex items-center gap-2 px-3 py-2 bg-purple-500/10 border-b border-purple-500/20">
-        <FileText className="h-3.5 w-3.5 text-purple-400" />
-        <span className="text-xs font-medium text-purple-300">
-          📄 文档原文
-        </span>
+      <div className="flex items-center gap-2 border-b border-accent/20 bg-accent/10 px-3 py-2">
+        <FileText className="h-3.5 w-3.5 text-accent" />
+        <span className="text-xs font-medium text-accent">文档原文</span>
         {pageInfo && (
-          <span className="text-xs text-purple-400/60 ml-auto">
+          <span className="ml-auto text-xs text-accent/70">
             {pageInfo}
           </span>
         )}
@@ -36,11 +34,11 @@ export function SourceQuoteCard({ sourceText, pageInfo, heading }: SourceQuoteCa
       {/* 原文内容 */}
       <div className="px-3 py-2">
         {heading && (
-          <p className="text-xs font-medium text-purple-300 mb-1">
+          <p className="mb-1 text-xs font-medium text-accent">
             {heading}
           </p>
         )}
-        <p className="text-xs text-zinc-400 leading-relaxed whitespace-pre-wrap">
+        <p className="whitespace-pre-wrap text-xs leading-relaxed text-foreground/75">
           {sourceText.length > 500 ? sourceText.slice(0, 500) + '...' : sourceText}
         </p>
       </div>

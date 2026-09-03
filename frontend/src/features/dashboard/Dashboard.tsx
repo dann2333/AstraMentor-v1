@@ -1,5 +1,5 @@
 import React from 'react';
-import { Card, CardContent } from '../../components/ui/card';
+import { ChevronDown } from 'lucide-react';
 import type { LearnerState } from '../../types';
 import { useLanguage } from '../../contexts/LanguageContext';
 
@@ -11,7 +11,7 @@ interface DashboardProps {
   viewMode?: '2d' | '3d';
 }
 
-const Dashboard: React.FC<DashboardProps> = ({ state, graphData, viewMode }) => {
+const Dashboard: React.FC<DashboardProps> = ({ state, graphData }) => {
   const { t } = useLanguage();
   const [isOpen, setIsOpen] = React.useState(true);
   
@@ -49,57 +49,40 @@ const Dashboard: React.FC<DashboardProps> = ({ state, graphData, viewMode }) => 
 
   if (!displayState) return null;
 
-  const is3D = viewMode === '3d';
-
   return (
-    <div className="dashboard-shell flex flex-col gap-2 mb-4 pointer-events-auto">
-      <div className="flex items-center">
-        <button 
+    // 三张方卡合成了一条窄横幅。原来那组卡片占掉星图左上角一大块，
+    // 节点一旦被布局排到那儿就直接压在数字上；而且"三个大数字卡"本身
+    // 也是最没记忆点的那种仪表盘写法。
+    <div className="dashboard-shell pointer-events-auto">
+      <div className="dashboard-bar glass glass--thin glass--grain glass--lit">
+        {isOpen && (
+          <>
+            <span className="dashboard-bar__item">
+              <em>{t('dashboard.total')}</em>
+              <b>{displayState.total}</b>
+            </span>
+            <i className="dashboard-bar__sep" />
+            <span className="dashboard-bar__item">
+              <em>{t('dashboard.mastered')}</em>
+              <b className="dashboard-bar__value--done">{displayState.mastered}</b>
+            </span>
+            <i className="dashboard-bar__sep" />
+            <span className="dashboard-bar__item">
+              <em>{t('dashboard.average_mastery')}</em>
+              <b>{(displayState.average_mastery * 100).toFixed(1)}%</b>
+            </span>
+          </>
+        )}
+        <button
+          type="button"
           onClick={() => setIsOpen(!isOpen)}
-          className={`flex items-center gap-1 text-xs font-medium px-2 py-1 rounded-md transition-all ${
-            is3D 
-              ? 'text-slate-300 hover:text-white bg-white/10 hover:bg-white/20 backdrop-blur-md border border-white/10'
-              : 'text-slate-500 hover:text-slate-700 bg-white/50 hover:bg-white/80 backdrop-blur-sm'
-          }`}
+          className="dashboard-bar__toggle"
+          aria-expanded={isOpen}
+          title={isOpen ? t('dashboard.collapse') : t('dashboard.expand')}
         >
-          {isOpen ? t('dashboard.collapse') : t('dashboard.expand')}
+          <ChevronDown size={13} style={{ transform: isOpen ? 'rotate(180deg)' : 'none', transition: 'transform .25s var(--glass-ease-out)' }} />
         </button>
       </div>
-      
-      {isOpen && (
-        <div className="dashboard-stats animate-in fade-in slide-in-from-top-2 duration-300">
-          <Card className={`dashboard-stat backdrop-blur-md shadow-sm transition-colors ${
-            is3D 
-              ? 'bg-white/10 border-white/10 hover:bg-white/20' 
-              : 'bg-white/80 border-white/20 hover:bg-white/90'
-          }`}>
-            <CardContent className="dashboard-stat__content p-4 flex flex-col items-center justify-center">
-              <div className={`text-xs font-medium mb-1 ${is3D ? 'text-slate-300' : 'text-muted-foreground'}`}>{t('dashboard.total')}</div>
-              <div className={`text-2xl font-bold ${is3D ? 'text-slate-100' : ''}`}>{displayState.total}</div>
-            </CardContent>
-          </Card>
-          <Card className={`dashboard-stat backdrop-blur-md shadow-sm transition-colors ${
-            is3D 
-              ? 'bg-white/10 border-white/10 hover:bg-white/20' 
-              : 'bg-white/80 border-white/20 hover:bg-white/90'
-          }`}>
-            <CardContent className="dashboard-stat__content p-4 flex flex-col items-center justify-center">
-                <div className={`text-xs font-medium mb-1 ${is3D ? 'text-slate-300' : 'text-muted-foreground'}`}>{t('dashboard.mastered')}</div>
-                <div className={`text-2xl font-bold ${is3D ? 'text-emerald-400' : 'text-green-600'}`}>{displayState.mastered}</div>
-            </CardContent>
-          </Card>
-          <Card className={`dashboard-stat backdrop-blur-md shadow-sm transition-colors ${
-            is3D 
-              ? 'bg-white/10 border-white/10 hover:bg-white/20' 
-              : 'bg-white/80 border-white/20 hover:bg-white/90'
-          }`}>
-            <CardContent className="dashboard-stat__content p-4 flex flex-col items-center justify-center">
-                <div className={`text-xs font-medium mb-1 ${is3D ? 'text-slate-300' : 'text-muted-foreground'}`}>{t('dashboard.average_mastery')}</div>
-                <div className={`text-2xl font-bold ${is3D ? 'text-slate-100' : ''}`}>{(displayState.average_mastery * 100).toFixed(1)}%</div>
-            </CardContent>
-          </Card>
-        </div>
-      )}
     </div>
   );
 };

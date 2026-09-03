@@ -28,7 +28,7 @@ const ResizableHandle = ({
 }) => (
   <PanelResizeHandle
     className={cn(
-      "relative flex w-1 items-center justify-center bg-border/20 hover:bg-blue-400/50 transition-colors focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring focus-visible:ring-offset-1 data-[panel-group-direction=vertical]:h-1 data-[panel-group-direction=vertical]:w-full [&[data-panel-group-direction=vertical]>div]:rotate-90 cursor-col-resize",
+      "relative flex w-1 items-center justify-center bg-border/20 hover:bg-primary/45 transition-colors focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring focus-visible:ring-offset-1 data-[panel-group-direction=vertical]:h-1 data-[panel-group-direction=vertical]:w-full [&[data-panel-group-direction=vertical]>div]:rotate-90 cursor-col-resize",
       className
     )}
     {...props}
