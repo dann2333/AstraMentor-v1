@@ -6,7 +6,6 @@ AstraMentor - 双Agent教学系统
 
 import logging
 import sys
-from pathlib import Path
 
 from services.learning_service import LearningService
 from services.database import ANONYMOUS_OWNER_ID
@@ -15,7 +14,6 @@ from core.constants import LearningLevel
 from utils.api_client import APIClient
 from core.constants import LearningLevel
 from utils.api_client import APIClient
-import json
 
 
 # 配置日志
@@ -424,17 +422,15 @@ def main():
         selected_attrs["user_note"] = user_note
         has_changes = True
 
-    # 保存更新后的数据到文件
+    # 保存更新后的数据
     if has_changes:
         selected_node["attributes"] = selected_attrs
-        test_data_dir = Path("test_data")
-        graph_filename = (
-            f"knowledge_graph_{topic.replace(' ', '_').replace('/', '_')}.json"
-        )
-        graph_file = test_data_dir / graph_filename
-        with open(graph_file, "w", encoding="utf-8") as f:
-            json.dump(graph_data, f, ensure_ascii=False, indent=2)
-        print(f"✅ 已保存更新到知识星图")
+        # NOTE: 走和 Web 端同一套存储。之前这里直接往 test_data/ 写 JSON，
+        # 而应用早已不再读那些文件：CLI 会打印"已保存"，改动却根本没生效。
+        if mentor.service.save_graph(topic=topic, graph_data=graph_data):
+            print("✅ 已保存更新到知识星图")
+        else:
+            print("⚠️ 保存知识星图失败，本次调整未生效")
 
     # 第四步：开始学习
     print(f"\n📊 学习参数（基于 AI 分析）：")

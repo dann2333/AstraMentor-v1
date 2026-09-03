@@ -41,6 +41,7 @@ from services.learning_store import (
 )
 from services.user_data_repository import (
     InvalidSessionId,
+    SessionNotFound,
     SnapshotTooLarge,
     UserDataRepository,
 )
@@ -53,6 +54,14 @@ LEGACY_DATA_DIR = Path("test_data")
 LEGACY_UPLOAD_DIR = LEGACY_DATA_DIR / "uploads"
 
 IMPORTED_SUFFIX = ".imported"
+
+
+def _session_exists(repository: UserDataRepository, session_id: str) -> bool:
+    try:
+        repository.get(ANONYMOUS_OWNER_ID, session_id)
+    except (SessionNotFound, InvalidSessionId):
+        return False
+    return True
 
 
 def _read_json(path: Path) -> Any | None:
@@ -82,18 +91,24 @@ def _retire(directory: Path) -> None:
 
 
 def import_legacy_sessions(
-    repository: UserDataRepository, root: Path = LEGACY_SESSION_DIR
+    repository: UserDataRepository,
+    root: Path = LEGACY_SESSION_DIR,
+    *,
+    overwrite: bool = False,
 ) -> int:
     if not root.is_dir():
         return 0
     imported = 0
     for path in sorted(root.glob("*.json")):
         if path.name == "index.json":
-            continue  # 索引可以由快照重建，没有导入价值
+            continue  # 索引可以由快建重建，没有导入价值
         snapshot = _read_json(path)
         if not isinstance(snapshot, dict):
             continue
         session_id = snapshot.get("session_id") or path.stem
+        if not overwrite and _session_exists(repository, session_id):
+            logger.info("已存在同名会话，跳过导入: %s", session_id)
+            continue
         try:
             repository.save(ANONYMOUS_OWNER_ID, session_id, snapshot)
         except (InvalidSessionId, SnapshotTooLarge) as exc:
@@ -104,7 +119,7 @@ def import_legacy_sessions(
 
 
 def import_legacy_learning_data(
-    store: LearningStore, root: Path = LEGACY_DATA_DIR
+    store: LearningStore, root: Path = LEGACY_DATA_DIR, *, overwrite: bool = False
 ) -> tuple[int, int]:
     """导入星图与学习者状态，返回 (星图数, 状态数)。"""
     if not root.is_dir():
@@ -118,6 +133,9 @@ def import_legacy_learning_data(
         # 文件名尾部就是当年的 scoped_topic，直接拼回存储键。
         scope = path.stem[len("knowledge_graph_") :]
         if not scope:
+            continue
+        if not overwrite and store.read_graph(ANONYMOUS_OWNER_ID, f"graph:{scope}"):
+            logger.info("库里已有同键星图，跳过导入: %s", scope)
             continue
         try:
             store.write_graph(ANONYMOUS_OWNER_ID, f"graph:{scope}", payload)
@@ -138,6 +156,9 @@ def import_legacy_learning_data(
             scope = f"state:{stem[len('learner_state_'):]}"
         else:
             continue
+        if not overwrite and store.read_learner_state(ANONYMOUS_OWNER_ID, scope):
+            logger.info("库里已有同键学习状态，跳过导入: %s", scope)
+            continue
         try:
             store.write_learner_state(ANONYMOUS_OWNER_ID, scope, payload)
         except PayloadTooLarge as exc:
@@ -152,6 +173,8 @@ def import_legacy_documents(
     store: LearningStore,
     root: Path = LEGACY_UPLOAD_DIR,
     upload_root: Path = UPLOAD_ROOT,
+    *,
+    overwrite: bool = False,
 ) -> int:
     if not root.is_dir():
         return 0
@@ -162,6 +185,9 @@ def import_legacy_documents(
             continue
         doc_id = payload.get("doc_id") or path.stem[: -len("_context")]
         if not doc_id:
+            continue
+        if not overwrite and store.read_document(ANONYMOUS_OWNER_ID, doc_id):
+            logger.info("库里已有同 id 文档，跳过导入: %s", doc_id)
             continue
         try:
             store.write_document(
@@ -214,9 +240,17 @@ def has_legacy_data() -> bool:
 
 
 def import_legacy_data(
-    database: Database | None = None, *, retire_sources: bool = True
+    database: Database | None = None,
+    *,
+    retire_sources: bool = True,
+    overwrite: bool = False,
 ) -> dict[str, int]:
-    """把所有旧文件导入访客空间，返回各类数据的导入条数。"""
+    """把所有旧文件导入访客空间，返回各类数据的导入条数。
+
+    ``overwrite=False``（默认）时，库里已经有同一个键就跳过。启动时会自动跑这个
+    导入，而"启动"随时可能发生；如果它会覆盖，任何一个被放回原位的旧文件都能
+    在下次重启时悄悄盖掉线上数据。手工运行可以显式要求覆盖。
+    """
     if not has_legacy_data():
         return dict(EMPTY_SUMMARY)
     database = database or default_database
@@ -224,9 +258,9 @@ def import_legacy_data(
     store = LearningStore(database)
     repository = UserDataRepository(database)
 
-    sessions = import_legacy_sessions(repository)
-    graphs, states = import_legacy_learning_data(store)
-    documents = import_legacy_documents(store)
+    sessions = import_legacy_sessions(repository, overwrite=overwrite)
+    graphs, states = import_legacy_learning_data(store, overwrite=overwrite)
+    documents = import_legacy_documents(store, overwrite=overwrite)
 
     summary = {
         "sessions": sessions,
@@ -234,7 +268,9 @@ def import_legacy_data(
         "learner_states": states,
         "documents": documents,
     }
-    if retire_sources and any(summary.values()):
+    # 即使这次一条都没导入（都已存在）也要退休源目录，
+    # 否则每次启动都会重新扫一遍同样的文件。
+    if retire_sources:
         _retire(LEGACY_SESSION_DIR)
         _retire(LEGACY_UPLOAD_DIR)
         # test_data 根目录还放着课程等非学习数据，只清掉导入过的文件本身。

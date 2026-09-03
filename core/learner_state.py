@@ -18,6 +18,15 @@ from typing import Any, Optional, Protocol
 # 每次评分都会整体重写，历史无上限时这个 blob 会无限膨胀。
 MAX_HISTORY_ENTRIES = 200
 
+# 整份状态序列化后的软上限。后端存储另有一道硬上限（4 MB），一旦超过就直接
+# 拒收 —— 而这份状态是在答题流程里自动保存的，被拒收意味着学习进度**再也存不
+# 进去**。因此这里主动裁剪到合适大小，宁可丢掉最旧的历史，也不能让保存失败。
+MAX_SERIALIZED_BYTES = 3 * 1024 * 1024
+
+# 裁剪时每个知识点至少保留的历史条数，以及讲解内容的截断长度。
+MIN_HISTORY_ENTRIES = 10
+TRIMMED_TEACHING_CONTENT_CHARS = 500
+
 logger = logging.getLogger(__name__)
 
 
@@ -439,11 +448,55 @@ class LearnerState:
         )
         return data
 
+    @staticmethod
+    def _encoded_size(data: dict[str, Any]) -> int:
+        return len(json.dumps(data, ensure_ascii=False).encode("utf-8"))
+
+    def _shrink_to_fit(self) -> dict[str, Any]:
+        """把状态裁剪到软上限以内，返回将要写出的数据。
+
+        裁剪顺序是"先丢最没用的"：历史记录里最旧的条目，然后是上一次的讲解
+        原文。掌握度、目标值、教学计划与当前步骤永远保留 —— 丢了它们，
+        学生的进度就真的没了。
+        """
+        data = self.to_dict()
+        if self._encoded_size(data) <= MAX_SERIALIZED_BYTES:
+            return data
+
+        # 第一轮：按历史长度从多到少，逐步把历史砍半，直到装得下。
+        limit = MAX_HISTORY_ENTRIES
+        while limit > MIN_HISTORY_ENTRIES:
+            limit = max(MIN_HISTORY_ENTRIES, limit // 2)
+            for point in self.knowledge_points.values():
+                if len(point.history) > limit:
+                    del point.history[:-limit]
+            data = self.to_dict()
+            if self._encoded_size(data) <= MAX_SERIALIZED_BYTES:
+                logger.info("学习者状态已裁剪历史至每个知识点 %d 条", limit)
+                return data
+
+        # 第二轮：历史已经砍到底，再截断上一次的讲解原文（可以重新生成）。
+        for point in self.knowledge_points.values():
+            if len(point.last_teaching_content) > TRIMMED_TEACHING_CONTENT_CHARS:
+                point.last_teaching_content = point.last_teaching_content[
+                    :TRIMMED_TEACHING_CONTENT_CHARS
+                ]
+        data = self.to_dict()
+        logger.warning(
+            "学习者状态过大，已裁剪历史与讲解内容后写出（%d 字节）",
+            self._encoded_size(data),
+        )
+        return data
+
     def save(self) -> None:
-        """把状态写入配置的后端；未配置后端时静默跳过"""
+        """把状态写入配置的后端；未配置后端时静默跳过。
+
+        写出前先裁剪：这份状态是在答题流程里自动保存的，一旦超过后端的硬上限
+        就会被拒收，学生此后的每一次进度都再也存不进去。
+        """
         if self.store is None:
             return
-        self.store.write(self.to_dict())
+        self.store.write(self._shrink_to_fit())
 
     def load(self) -> None:
         """从配置的后端读取状态；未配置后端时静默跳过。

@@ -5,6 +5,7 @@
 
 from __future__ import annotations
 
+import json
 from pathlib import Path
 import tempfile
 import threading
@@ -17,8 +18,19 @@ import backend.doc_api as doc_api
 from backend.app import app
 from backend.classroom_api import get_assignment_service, get_classroom_service
 from backend.dependencies import get_account_service
-from core.learner_state import LearnerState
-from services.account_service import AccountService
+from core.learner_state import (
+    LearnerState,
+    MAX_HISTORY_ENTRIES,
+    MAX_SERIALIZED_BYTES,
+    MIN_HISTORY_ENTRIES,
+)
+from services.account_service import (
+    AccountService,
+    SystemAccountProtected,
+    UserNotFound,
+    ValidationError as AccountValidationError,
+)
+from services.bootstrap_admin import promote
 from services.assignment_service import AssignmentService, ClassroomArchived
 from services.classroom_service import (
     AlreadyEnrolled,
@@ -33,6 +45,7 @@ from services.database import ANONYMOUS_OWNER_ID, Database, ROLE_TEACHER
 from services.learning_store import (
     InvalidDocumentId,
     LearningStore,
+    MAX_STATE_BYTES,
     SqlLearnerStateStore,
     owner_upload_path,
     validate_doc_id,
@@ -451,6 +464,87 @@ class JoinQuotaFairnessTests(unittest.TestCase):
         self.assertLessEqual(wrong, MAX_JOIN_ATTEMPTS)
 
 
+class LearnerStateSizeTests(unittest.TestCase):
+    """状态涨过存储上限后，学习进度不能就此再也存不进去。"""
+
+    def setUp(self) -> None:
+        self.temp = tempfile.TemporaryDirectory()
+        self.store = LearningStore(Database(Path(self.temp.name) / "astramentor.db"))
+
+    def tearDown(self) -> None:
+        self.temp.cleanup()
+
+    @staticmethod
+    def _size(data: dict) -> int:
+        return len(json.dumps(data, ensure_ascii=False).encode("utf-8"))
+
+    def _oversized_state(self) -> LearnerState:
+        """直接构造一份远超上限的状态，绕开自动保存的逐步裁剪。"""
+        state = LearnerState()
+        feedback = "很详细的评语。" * 45
+        for index in range(40):
+            point = state.add_knowledge_point(f"节点{index}", target_mastery=0.85)
+            point.actual_mastery = 0.7
+            point.current_step = 3
+            point.teaching_plan = [
+                {"name": f"步骤{step}", "content": "c", "verification": "v"}
+                for step in range(5)
+            ]
+            point.last_teaching_content = "讲解内容。" * 400
+            point.history = [
+                {
+                    "timestamp": "t",
+                    "old_mastery": 0.1,
+                    "new_mastery": 0.2,
+                    "score": 0.5,
+                    "feedback": feedback,
+                }
+                for _ in range(MAX_HISTORY_ENTRIES)
+            ]
+        self.assertGreater(self._size(state.to_dict()), MAX_SERIALIZED_BYTES)
+        return state
+
+    def test_an_oversized_state_is_trimmed_rather_than_rejected(self) -> None:
+        state = self._oversized_state()
+        state.store = SqlLearnerStateStore(
+            ANONYMOUS_OWNER_ID, "state:big", self.store
+        )
+        state.save()  # 修复前这里抛 PayloadTooLarge，此后进度永远存不下
+
+        stored = self.store.read_learner_state(ANONYMOUS_OWNER_ID, "state:big")
+        self.assertLessEqual(self._size(stored), MAX_STATE_BYTES)
+        # 裁掉的只能是历史，进度本身必须完好
+        self.assertEqual(len(stored), 40)
+        point = stored["节点0"]
+        self.assertEqual(point["actual_mastery"], 0.7)
+        self.assertEqual(point["target_mastery"], 0.85)
+        self.assertEqual(point["current_step"], 3)
+        self.assertEqual(len(point["teaching_plan"]), 5)
+        self.assertGreaterEqual(len(point["history"]), MIN_HISTORY_ENTRIES)
+        self.assertLess(len(point["history"]), MAX_HISTORY_ENTRIES)
+
+    def test_progress_can_still_be_recorded_afterwards(self) -> None:
+        state = self._oversized_state()
+        state.store = SqlLearnerStateStore(
+            ANONYMOUS_OWNER_ID, "state:big", self.store
+        )
+        state.save()
+
+        state.update_mastery("节点0", 0.95, 0.9, "后来又做了一题")
+        stored = self.store.read_learner_state(ANONYMOUS_OWNER_ID, "state:big")
+        self.assertEqual(stored["节点0"]["actual_mastery"], 0.95)
+
+    def test_a_normal_state_is_left_untouched(self) -> None:
+        state = LearnerState(
+            store=SqlLearnerStateStore(ANONYMOUS_OWNER_ID, "state:small", self.store)
+        )
+        state.add_knowledge_point("递归", target_mastery=0.8)
+        for index in range(30):
+            state.update_mastery("递归", 0.5, 0.6, f"第 {index} 次")
+        stored = self.store.read_learner_state(ANONYMOUS_OWNER_ID, "state:small")
+        self.assertEqual(len(stored["递归"]["history"]), 30)
+
+
 class AccountDeletionCleanupTests(unittest.TestCase):
     """删号后磁盘上不该留下访问不到的孤儿 PDF。"""
 
@@ -498,6 +592,47 @@ class AccountDeletionCleanupTests(unittest.TestCase):
         self.assertIsNone(self.store.read_document(owner_id, SHARED_DOC_ID))
         self.assertFalse(pdf.exists(), "删号后 PDF 仍留在磁盘上")
         self.assertFalse(pdf.parent.exists())
+
+
+class AdminBootstrapTests(unittest.TestCase):
+    """全新部署里一个管理员都没有，那条改角色的接口就永远调不通。"""
+
+    def setUp(self) -> None:
+        self.temp = tempfile.TemporaryDirectory()
+        self.database = Database(Path(self.temp.name) / "astramentor.db")
+        self.accounts = AccountService(self.database)
+
+    def tearDown(self) -> None:
+        self.temp.cleanup()
+
+    def test_no_account_can_self_assign_admin(self) -> None:
+        with self.assertRaises(AccountValidationError):
+            self.accounts.register("sneaky1", "correct-horse-1", role="admin")
+
+    def test_the_cli_promotes_an_existing_account(self) -> None:
+        user = self.accounts.register("root1", "correct-horse-1")
+        self.assertEqual(user.role, "student")
+
+        promote("root1", self.accounts)
+
+        promoted = self.accounts.get_user(user.id)
+        self.assertEqual(promoted.role, "admin")
+        self.assertTrue(promoted.is_admin)
+        # 有了管理员，改角色这条路才走得通
+        self.assertEqual(
+            self.accounts.set_role(
+                self.accounts.register("pupil1", "correct-horse-2").id, "teacher"
+            ).role,
+            "teacher",
+        )
+
+    def test_promoting_an_unknown_account_fails_loudly(self) -> None:
+        with self.assertRaises(UserNotFound):
+            promote("nobody", self.accounts)
+
+    def test_the_reserved_guest_account_cannot_be_promoted(self) -> None:
+        with self.assertRaises(SystemAccountProtected):
+            self.accounts.set_role(ANONYMOUS_OWNER_ID, "admin")
 
 
 if __name__ == "__main__":

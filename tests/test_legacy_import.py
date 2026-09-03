@@ -166,6 +166,62 @@ class LegacyImportTests(unittest.TestCase):
             {"sessions": 0, "graphs": 0, "learner_states": 0, "documents": 0},
         )
 
+    def test_existing_rows_are_not_overwritten_by_a_stray_old_file(self) -> None:
+        """启动时会自动导入，因此它绝不能覆盖线上数据。"""
+        self.repository.save(
+            ANONYMOUS_OWNER_ID, "old_sess", {"session_id": "old_sess", "title": "现在的"}
+        )
+        self.store.write_graph(
+            ANONYMOUS_OWNER_ID, "graph:agent-engineering_abc123", {"nodes": ["现在的"]}
+        )
+        self.store.write_learner_state(
+            ANONYMOUS_OWNER_ID, "state:default", {"现在的": {"name": "现在的"}}
+        )
+        self._seed()
+
+        import_legacy_data(self.database)
+
+        self.assertEqual(
+            self.repository.get(ANONYMOUS_OWNER_ID, "old_sess")["title"], "现在的"
+        )
+        self.assertEqual(
+            self.store.read_graph(
+                ANONYMOUS_OWNER_ID, "graph:agent-engineering_abc123"
+            ),
+            {"nodes": ["现在的"]},
+        )
+        self.assertEqual(
+            self.store.read_learner_state(ANONYMOUS_OWNER_ID, "state:default"),
+            {"现在的": {"name": "现在的"}},
+        )
+        # 没冲突的那份仍然导进来了
+        self.assertIn(
+            "感知模块",
+            self.store.read_learner_state(
+                ANONYMOUS_OWNER_ID, "state:agent-engineering_abc123"
+            ),
+        )
+
+    def test_explicit_overwrite_still_replaces(self) -> None:
+        self.repository.save(
+            ANONYMOUS_OWNER_ID, "old_sess", {"session_id": "old_sess", "title": "现在的"}
+        )
+        self._seed()
+        import_legacy_data(self.database, overwrite=True)
+        self.assertEqual(
+            self.repository.get(ANONYMOUS_OWNER_ID, "old_sess")["title"], "我以前的学习"
+        )
+
+    def test_sources_retire_even_when_everything_was_skipped(self) -> None:
+        """否则每次启动都会重新扫一遍同样的文件。"""
+        self.repository.save(
+            ANONYMOUS_OWNER_ID, "old_sess", {"session_id": "old_sess", "title": "现在的"}
+        )
+        self._seed()
+        import_legacy_data(self.database)
+        self.assertFalse(self.sessions_dir.exists())
+        self.assertFalse(self.uploads_dir.exists())
+
     def test_nothing_to_import_is_not_an_error(self) -> None:
         summary = import_legacy_data(self.database)
         self.assertEqual(
