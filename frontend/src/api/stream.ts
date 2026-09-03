@@ -1,4 +1,4 @@
-import { API_BASE_URL } from './client';
+import { API_BASE_URL, authorizationHeader, notifyUnauthorized } from './client';
 import { ApiRequestError } from './errors';
 
 export type StreamEventName =
@@ -25,11 +25,21 @@ export async function streamLearning(
 ): Promise<void> {
   const response = await fetch(`${API_BASE_URL}${endpoint}`, {
     method: 'POST',
-    headers: { 'Content-Type': 'application/json', Accept: 'text/event-stream' },
+    headers: {
+      'Content-Type': 'application/json',
+      Accept: 'text/event-stream',
+      // SSE 走的是 fetch，绕开了 axios 拦截器，令牌必须在这里手动带上。
+      ...authorizationHeader(),
+    },
     body: JSON.stringify(body),
     signal,
   });
   if (!response.ok) {
+    if (response.status === 401) {
+      // SSE 绕开了 axios 拦截器，令牌失效时同样要退出登录，
+      // 否则头部还显示着用户名，用户只会看到一条看不懂的报错。
+      notifyUnauthorized();
+    }
     const contentType = response.headers.get('content-type') || '';
     const rawPayload = await response.text();
     let payload: unknown = rawPayload;

@@ -267,12 +267,12 @@ export function CourseCatalog({ onSelectCourse, recovery, onRecoveryHandled }: C
   };
 
   if (loading) {
-    return <div className="course-empty"><Loader2 className="animate-spin" /> 正在读取课程知识库…</div>;
+    return <div className="course-empty glass glass--thin glass--grain"><Loader2 className="animate-spin" /> 正在读取课程知识库…</div>;
   }
 
   if (error && courses.length === 0) {
     return (
-      <div className="course-empty course-empty--error">
+      <div className="course-empty course-empty--error glass glass--thin glass--grain">
         <p>{error}</p>
         <button type="button" onClick={() => void loadCourses()}><RefreshCw size={14} /> 重新连接</button>
       </div>
@@ -307,7 +307,7 @@ export function CourseCatalog({ onSelectCourse, recovery, onRecoveryHandled }: C
         return (
           <article
             id={`course-${course.id}`}
-            className={`course-card${highlighted ? ' course-card--recovery' : ''}`}
+            className={`course-card glass glass--regular glass--grain glass--refract${highlighted ? ' course-card--recovery' : ''}`}
             key={course.id}
             style={{ '--course-delay': `${index * 80}ms` } as CSSProperties}
           >
@@ -362,7 +362,7 @@ export function CourseCatalog({ onSelectCourse, recovery, onRecoveryHandled }: C
             </div>
 
             {cardMessages[course.id] && (
-              <p className={`course-card__message course-card__message--${cardMessages[course.id].kind}`} role="status">
+              <p className={`course-card glass glass--regular glass--grain glass--refract__message course-card__message--${cardMessages[course.id].kind}`} role="status">
                 {cardMessages[course.id].kind === 'error' && <AlertTriangle size={13} />}
                 {cardMessages[course.id].text}
               </p>

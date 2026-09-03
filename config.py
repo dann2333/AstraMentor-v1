@@ -102,6 +102,14 @@ class AuthConfig:
         default_factory=lambda: int(os.getenv("ASTRA_AUTH_LOCKOUT_MINUTES", "15"))
     )
 
+    # 是否允许未登录访客使用学习接口。
+    # 允许时访客数据统一挂在预留的访客账号下，与任何真实账号相互隔离；
+    # 设为 false 即可让整站强制登录（班级与作业接口始终要求登录，不受此开关影响）。
+    allow_anonymous: bool = field(
+        default_factory=lambda: os.getenv("ASTRA_ALLOW_ANONYMOUS", "true").lower()
+        != "false"
+    )
+
 
 @dataclass
 class Config:

@@ -21,11 +21,13 @@ from services.account_service import (
     AccountService,
     EmailTaken,
     InvalidCredentials,
+    ReservedUsername,
     User,
     UsernameTaken,
     UserNotFound,
     ValidationError,
 )
+from services.learning_store import UPLOAD_ROOT, purge_owner_uploads
 
 
 auth_router = APIRouter(prefix="/auth", tags=["auth"])
@@ -53,8 +55,12 @@ def register(
             request.password,
             email=request.email,
             display_name=request.display_name,
+            # allow_admin_role 永远不传：admin 只能由已有管理员授予。
+            role=request.role,
         )
     except ValidationError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+    except ReservedUsername as exc:
         raise HTTPException(status_code=422, detail=str(exc)) from exc
     except (UsernameTaken, EmailTaken) as exc:
         raise HTTPException(status_code=409, detail=str(exc)) from exc
@@ -180,3 +186,6 @@ def delete_account(
         service.delete_user(user.id)
     except UserNotFound as exc:
         raise HTTPException(status_code=404, detail="account not found") from exc
+    # 数据库里的行随外键级联清理，磁盘上的原始 PDF 不会：一并删掉，
+    # 否则它们会变成没有任何行指向、也访问不到的孤儿文件。
+    purge_owner_uploads(user.id, UPLOAD_ROOT)

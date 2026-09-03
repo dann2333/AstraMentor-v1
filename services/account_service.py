@@ -14,7 +14,17 @@ import sqlite3
 from typing import Any
 from uuid import uuid4
 
-from services.database import Database, default_database, utc_now
+from services.database import (
+    ANONYMOUS_USERNAME,
+    Database,
+    ROLE_ADMIN,
+    ROLE_STUDENT,
+    ROLE_TEACHER,
+    SYSTEM_USER_IDS,
+    VALID_ROLES,
+    default_database,
+    utc_now,
+)
 from services.security import (
     generate_token,
     hash_password,
@@ -29,6 +39,10 @@ EMAIL_PATTERN = re.compile(r"^[^@\s]+@[^@\s.]+(\.[^@\s.]+)+$")
 PASSWORD_MIN_LENGTH = 8
 PASSWORD_MAX_LENGTH = 128
 DISPLAY_NAME_MAX_LENGTH = 64
+
+# NOTE: 注册接口只允许这两种角色。admin 必须由已有管理员授予，
+# 否则任何人都能靠一次注册拿到全站权限。
+SELF_ASSIGNABLE_ROLES = (ROLE_STUDENT, ROLE_TEACHER)
 
 
 class AccountError(Exception):
@@ -71,6 +85,14 @@ class InvalidToken(AccountError):
     """Raised when a bearer token is unknown, revoked or expired."""
 
 
+class ReservedUsername(AccountError):
+    """Raised when a registration targets an internal, reserved account name."""
+
+
+class SystemAccountProtected(AccountError):
+    """Raised when a caller tries to mutate an internal system account."""
+
+
 def _parse_timestamp(value: str | None) -> datetime | None:
     if not value:
         return None
@@ -93,9 +115,11 @@ class User:
     created_at: str
     updated_at: str
     last_login_at: str | None = None
+    role: str = ROLE_STUDENT
 
     @classmethod
     def from_row(cls, row: sqlite3.Row) -> "User":
+        keys = row.keys()
         return cls(
             id=row["id"],
             username=row["username"],
@@ -105,6 +129,7 @@ class User:
             created_at=row["created_at"],
             updated_at=row["updated_at"],
             last_login_at=row["last_login_at"],
+            role=row["role"] if "role" in keys else ROLE_STUDENT,
         )
 
     def to_dict(self) -> dict[str, Any]:
@@ -117,7 +142,16 @@ class User:
             "created_at": self.created_at,
             "updated_at": self.updated_at,
             "last_login_at": self.last_login_at,
+            "role": self.role,
         }
+
+    @property
+    def is_teacher(self) -> bool:
+        return self.role in (ROLE_TEACHER, ROLE_ADMIN)
+
+    @property
+    def is_admin(self) -> bool:
+        return self.role == ROLE_ADMIN
 
 
 @dataclass(frozen=True)
@@ -160,6 +194,14 @@ def validate_password(password: str) -> str:
             f"password must be at most {PASSWORD_MAX_LENGTH} characters long"
         )
     return password
+
+
+def normalize_role(role: str | None, *, allow_admin: bool = False) -> str:
+    candidate = (role or ROLE_STUDENT).strip().lower()
+    allowed = VALID_ROLES if allow_admin else SELF_ASSIGNABLE_ROLES
+    if candidate not in allowed:
+        raise ValidationError(f"role must be one of: {', '.join(allowed)}")
+    return candidate
 
 
 def normalize_display_name(display_name: str | None) -> str:
@@ -211,16 +253,25 @@ class AccountService:
         return User.from_row(row) if row else None
 
     def list_users(self, *, limit: int = 50, offset: int = 0) -> list[User]:
+        """List real accounts; the reserved guest-owner row is never exposed."""
+        placeholders = ", ".join("?" for _ in SYSTEM_USER_IDS)
         with self.database.connect() as connection:
             rows = connection.execute(
-                "SELECT * FROM users ORDER BY created_at ASC LIMIT ? OFFSET ?",
-                (limit, offset),
+                f"SELECT * FROM users WHERE id NOT IN ({placeholders}) "
+                "ORDER BY created_at ASC LIMIT ? OFFSET ?",
+                (*sorted(SYSTEM_USER_IDS), limit, offset),
             ).fetchall()
         return [User.from_row(row) for row in rows]
 
     def count_users(self) -> int:
+        placeholders = ", ".join("?" for _ in SYSTEM_USER_IDS)
         with self.database.connect() as connection:
-            return int(connection.execute("SELECT COUNT(*) FROM users").fetchone()[0])
+            return int(
+                connection.execute(
+                    f"SELECT COUNT(*) FROM users WHERE id NOT IN ({placeholders})",
+                    tuple(sorted(SYSTEM_USER_IDS)),
+                ).fetchone()[0]
+            )
 
     # ------------------------------------------------------------------
     # Registration and profile
@@ -232,11 +283,17 @@ class AccountService:
         *,
         email: str | None = None,
         display_name: str | None = None,
+        role: str = ROLE_STUDENT,
+        allow_admin_role: bool = False,
     ) -> User:
         username = normalize_username(username)
+        # USERNAME_PATTERN 已排除下划线开头，这里再挡一次，保证预留名永不可注册。
+        if username.lower() == ANONYMOUS_USERNAME:
+            raise ReservedUsername("this username is reserved")
         email = normalize_email(email)
         validate_password(password)
         display_name = normalize_display_name(display_name) or username
+        role = normalize_role(role, allow_admin=allow_admin_role)
 
         now = utc_now()
         user_id = uuid4().hex
@@ -248,6 +305,7 @@ class AccountService:
             email.lower() if email else None,
             display_name,
             hash_password(password),
+            role,
             now,
             now,
         )
@@ -258,8 +316,8 @@ class AccountService:
                     """
                     INSERT INTO users (
                         id, username, username_lower, email, email_lower,
-                        display_name, password_hash, created_at, updated_at
-                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+                        display_name, password_hash, role, created_at, updated_at
+                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                     """,
                     record,
                 )
@@ -327,7 +385,26 @@ class AccountService:
                 (utc_now(), user_id),
             )
 
+    def set_role(self, user_id: str, role: str) -> User:
+        """Change an account's role. Only ever called behind an admin guard."""
+        self._assert_not_system_account(user_id)
+        role = normalize_role(role, allow_admin=True)
+        with self.database.transaction() as connection:
+            self._row_by_id(connection, user_id)
+            connection.execute(
+                "UPDATE users SET role = ?, updated_at = ? WHERE id = ?",
+                (role, utc_now(), user_id),
+            )
+            return User.from_row(self._row_by_id(connection, user_id))
+
+    @staticmethod
+    def _assert_not_system_account(user_id: str) -> None:
+        """访客归属行不是真实账号，不能被停用、改角色或删除。"""
+        if user_id in SYSTEM_USER_IDS:
+            raise SystemAccountProtected("internal system account cannot be modified")
+
     def set_active(self, user_id: str, is_active: bool) -> User:
+        self._assert_not_system_account(user_id)
         with self.database.transaction() as connection:
             self._row_by_id(connection, user_id)
             connection.execute(
@@ -344,6 +421,7 @@ class AccountService:
 
     def delete_user(self, user_id: str) -> None:
         """Remove the account; tokens and stored data cascade away with it."""
+        self._assert_not_system_account(user_id)
         with self.database.transaction() as connection:
             self._row_by_id(connection, user_id)
             connection.execute("DELETE FROM users WHERE id = ?", (user_id,))
@@ -358,10 +436,12 @@ class AccountService:
         a rollback would otherwise discard the attempt counter it just bumped.
         """
         key = (identifier or "").strip().lower()
+        placeholders = ", ".join("?" for _ in SYSTEM_USER_IDS)
         with self.database.connect() as connection:
             row = connection.execute(
-                "SELECT * FROM users WHERE username_lower = ? OR email_lower = ?",
-                (key, key),
+                "SELECT * FROM users "
+                f"WHERE (username_lower = ? OR email_lower = ?) AND id NOT IN ({placeholders})",
+                (key, key, *sorted(SYSTEM_USER_IDS)),
             ).fetchone()
         if row is None:
             waste_password_comparison(password)

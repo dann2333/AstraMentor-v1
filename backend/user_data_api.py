@@ -7,8 +7,9 @@ from fastapi import APIRouter, Depends, HTTPException, Query, status
 from backend.dependencies import get_current_user
 from backend.models import UserSessionSnapshotRequest
 from services.account_service import User
-from services.session_repository import InvalidSessionId, SessionNotFound
 from services.user_data_repository import (
+    InvalidSessionId,
+    SessionNotFound,
     SnapshotTooLarge,
     UserDataRepository,
     user_data_repository,

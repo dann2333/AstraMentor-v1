@@ -5,18 +5,27 @@
 通过注入文档上下文和专用提示词，复用现有 TeacherAgent 和 EvaluationAgent。
 """
 
-import json
 import logging
 import uuid
-from pathlib import Path
-from typing import Dict, Any
+from collections import OrderedDict
 
-from fastapi import APIRouter, HTTPException, UploadFile, File
+from pydantic import ValidationError
+
+from fastapi import APIRouter, Depends, HTTPException, UploadFile, File
 from fastapi.responses import StreamingResponse
 
 from services.pdf_parser import parse_pdf, DocumentContext, get_chunks_text
 from services.learning_service import LearningService
+from services.learning_store import (
+    InvalidDocumentId,
+    PayloadTooLarge,
+    UPLOAD_ROOT,
+    learning_store,
+    owner_upload_path,
+    validate_doc_id,
+)
 from backend.api import build_streaming_response
+from backend.dependencies import get_owner_id
 from agents.doc_graph_agent import DocGraphAgent
 from utils.api_client import APIClient
 from services.streaming_service import encode_sse
@@ -29,6 +38,7 @@ from core.doc_prompts import (
 from backend.models import (
     UploadDocumentResponse,
     GenerateDocGraphRequest,
+    SaveDocGraphRequest,
     DocStartLearningRequest,
     DocChatRequest,
     DocEvaluateRequest,
@@ -42,28 +52,56 @@ logger = logging.getLogger(__name__)
 
 doc_router = APIRouter()
 
-# NOTE: 内存缓存已解析的文档上下文，避免每次请求重新解析 PDF
-# 生产环境应替换为 Redis 等外部缓存
-_doc_cache: Dict[str, DocumentContext] = {}
+# NOTE: 内存缓存已解析的文档上下文，避免每次请求重新解析 PDF。
+# 缓存键必须带上 owner_id：doc_id 是文件内容的 MD5，两个账号上传同一份 PDF
+# 会算出同一个 doc_id，只用 doc_id 做键会让他们互相读到对方的文档。
+# 同时限制条目数，否则这个进程内字典会随上传量无限增长。
+_DOC_CACHE_MAX_ENTRIES = 32
+_doc_cache: "OrderedDict[tuple[str, str], DocumentContext]" = OrderedDict()
 
-# NOTE: 上传文件存储目录
-_UPLOAD_DIR = Path("test_data") / "uploads"
+# NOTE: 上传文件存储根目录（定义在 learning_store，注销账号时也要用到）。
+# 保留这个模块级别名是为了让测试能够 patch 掉它。
+_UPLOAD_ROOT = UPLOAD_ROOT
 
 
-def _get_doc_context(doc_id: str) -> DocumentContext:
-    """从缓存获取文档上下文，不存在则尝试从磁盘加载"""
-    if doc_id in _doc_cache:
-        return _doc_cache[doc_id]
+def _cache_put(owner_id: str, doc_context: DocumentContext) -> None:
+    key = (owner_id, doc_context.doc_id)
+    _doc_cache[key] = doc_context
+    _doc_cache.move_to_end(key)
+    while len(_doc_cache) > _DOC_CACHE_MAX_ENTRIES:
+        _doc_cache.popitem(last=False)
 
-    # 尝试从磁盘加载
-    context_file = _UPLOAD_DIR / f"{doc_id}_context.json"
-    if context_file.exists():
-        with open(context_file, "r", encoding="utf-8") as f:
-            data = json.load(f)
-        doc_context = DocumentContext(**data)
-        _doc_cache[doc_id] = doc_context
+
+def _safe_doc_id(doc_id: str) -> str:
+    """把畸形的 doc_id 挡成 404，而不是让它一路走到文件系统。"""
+    try:
+        return validate_doc_id(doc_id)
+    except InvalidDocumentId as exc:
+        raise HTTPException(status_code=404, detail="文档未找到") from exc
+
+
+def _get_doc_context(owner_id: str, doc_id: str) -> DocumentContext:
+    """取出当前账号的文档上下文；命中不了缓存就回落到数据库"""
+    doc_id = _safe_doc_id(doc_id)
+    key = (owner_id, doc_id)
+    cached = _doc_cache.get(key)
+    if cached is not None:
+        _doc_cache.move_to_end(key)
+        return cached
+
+    stored = learning_store.read_document(owner_id, doc_id)
+    if stored is not None:
+        try:
+            doc_context = DocumentContext(**stored)
+        except ValidationError as exc:
+            logger.error("文档上下文无法解析 (owner=%s, doc=%s): %s", owner_id, doc_id, exc)
+            raise HTTPException(
+                status_code=500, detail="文档数据已损坏，请重新上传"
+            ) from exc
+        _cache_put(owner_id, doc_context)
         return doc_context
 
+    # 找不到就是 404：不要泄露"这个 doc_id 属于别人"这类信息。
     raise HTTPException(
         status_code=404,
         detail=f"文档 {doc_id} 未找到，请先上传 PDF 文件",
@@ -92,22 +130,18 @@ def _get_node_source_text(doc_context: DocumentContext, node_name: str, graph_da
     return doc_context.full_text[:2000] if doc_context.full_text else ""
 
 
-def _get_doc_service(doc_id: str) -> LearningService:
-    """为文档模式创建 LearningService 实例，使用 doc_id 作为 topic 隔离状态"""
-    return LearningService(topic=f"doc_{doc_id}")
+def _doc_topic(doc_id: str) -> str:
+    return f"doc_{doc_id}"
 
 
-def _load_doc_graph(doc_id: str) -> dict | None:
-    """从磁盘加载文档星图数据"""
-    safe_id = f"doc_{doc_id}"
-    graph_file = Path("test_data") / f"knowledge_graph_{safe_id}.json"
-    if not graph_file.exists():
-        return None
-    try:
-        with open(graph_file, "r", encoding="utf-8") as f:
-            return json.load(f)
-    except Exception:
-        return None
+def _get_doc_service(owner_id: str, doc_id: str) -> LearningService:
+    """为文档模式创建 LearningService 实例，按 (账号, doc_id) 隔离状态"""
+    return LearningService(topic=_doc_topic(_safe_doc_id(doc_id)), owner_id=owner_id)
+
+
+def _load_doc_graph(owner_id: str, doc_id: str) -> dict | None:
+    """读取当前账号下该文档的星图数据"""
+    return _get_doc_service(owner_id, doc_id).load_graph(_doc_topic(doc_id))
 
 
 def _prepare_doc_lesson(service: LearningService, kp, source_text: str, error_analysis: str = "") -> dict:
@@ -142,9 +176,12 @@ def _prepare_doc_lesson(service: LearningService, kp, source_text: str, error_an
 # ============================================================================
 
 @doc_router.post("/upload", response_model=UploadDocumentResponse)
-async def upload_document(file: UploadFile = File(...)):
+async def upload_document(
+    file: UploadFile = File(...),
+    owner_id: str = Depends(get_owner_id),
+):
     """
-    上传 PDF 文件并解析
+    上传 PDF 文件并解析（文档归当前账号所有）
 
     Returns:
         doc_id、文件名、页数和分块数
@@ -173,21 +210,34 @@ async def upload_document(file: UploadFile = File(...)):
             detail="无法从 PDF 中提取文本，可能是扫描件或图片型 PDF",
         )
 
-    # 缓存到内存
-    _doc_cache[doc_context.doc_id] = doc_context
+    # 持久化解析结果（按账号隔离，删号时随外键级联清理）
+    try:
+        learning_store.write_document(
+            owner_id,
+            doc_context.doc_id,
+            doc_context.model_dump(),
+            filename=doc_context.filename,
+            total_pages=doc_context.total_pages,
+            chunk_count=len(doc_context.chunks),
+        )
+    except PayloadTooLarge as exc:
+        raise HTTPException(
+            status_code=413, detail="文档解析结果过大，无法保存"
+        ) from exc
 
-    # 持久化到磁盘（JSON 格式保存上下文，方便后续加载）
-    _UPLOAD_DIR.mkdir(parents=True, exist_ok=True)
-    context_file = _UPLOAD_DIR / f"{doc_context.doc_id}_context.json"
-    with open(context_file, "w", encoding="utf-8") as f:
-        json.dump(doc_context.model_dump(), f, ensure_ascii=False, indent=2)
+    _cache_put(owner_id, doc_context)
 
-    # 同时保存原始 PDF 文件
-    pdf_file = _UPLOAD_DIR / f"{doc_context.doc_id}.pdf"
-    with open(pdf_file, "wb") as f:
-        f.write(file_bytes)
+    # 原始 PDF 存在该账号自己的目录下，别人既读不到也删不掉
+    pdf_path = owner_upload_path(owner_id, doc_context.doc_id, _UPLOAD_ROOT)
+    pdf_path.parent.mkdir(parents=True, exist_ok=True)
+    pdf_path.write_bytes(file_bytes)
 
-    logger.info(f"✅ 文档上传成功: {file.filename} → doc_id={doc_context.doc_id}")
+    logger.info(
+        "✅ 文档上传成功: %s → doc_id=%s (owner=%s)",
+        file.filename,
+        doc_context.doc_id,
+        owner_id,
+    )
 
     return UploadDocumentResponse(
         doc_id=doc_context.doc_id,
@@ -202,9 +252,12 @@ async def upload_document(file: UploadFile = File(...)):
 # ============================================================================
 
 @doc_router.post("/graph/generate")
-async def generate_doc_graph(request: GenerateDocGraphRequest):
+async def generate_doc_graph(
+    request: GenerateDocGraphRequest,
+    owner_id: str = Depends(get_owner_id),
+):
     """基于文档内容生成知识星图"""
-    doc_context = _get_doc_context(request.doc_id)
+    doc_context = _get_doc_context(owner_id, request.doc_id)
 
     api_client = APIClient()
     agent = DocGraphAgent(api_client=api_client)
@@ -221,9 +274,12 @@ async def generate_doc_graph(request: GenerateDocGraphRequest):
             detail=f"文档星图生成失败: {str(e)}",
         )
 
-    # 持久化到磁盘
-    service = _get_doc_service(request.doc_id)
-    service.save_graph(topic=f"doc_{request.doc_id}", graph_data=graph_data)
+    # 持久化到当前账号名下
+    service = _get_doc_service(owner_id, request.doc_id)
+    try:
+        service.save_graph(topic=_doc_topic(request.doc_id), graph_data=graph_data)
+    except PayloadTooLarge as exc:
+        raise HTTPException(status_code=413, detail="文档星图过大，无法保存") from exc
 
     return graph_data
 
@@ -233,13 +289,16 @@ async def generate_doc_graph(request: GenerateDocGraphRequest):
 # ============================================================================
 
 @doc_router.post("/learning/start")
-async def doc_start_learning(request: DocStartLearningRequest):
+async def doc_start_learning(
+    request: DocStartLearningRequest,
+    owner_id: str = Depends(get_owner_id),
+):
     """文档模式：开始学习（生成教学计划）"""
-    doc_context = _get_doc_context(request.doc_id)
-    graph_data = _load_doc_graph(request.doc_id)
+    doc_context = _get_doc_context(owner_id, request.doc_id)
+    graph_data = _load_doc_graph(owner_id, request.doc_id)
     source_text = _get_node_source_text(doc_context, request.node_name, graph_data or {})
 
-    service = _get_doc_service(request.doc_id)
+    service = _get_doc_service(owner_id, request.doc_id)
 
     # NOTE: 将原文上下文注入 user_note，使现有的 TeacherAgent 在生成计划时能参考原文
     doc_note = f"【文档模式 - 原文参考】\n{source_text}"
@@ -258,13 +317,16 @@ async def doc_start_learning(request: DocStartLearningRequest):
 
 
 @doc_router.post("/learning/lesson")
-async def doc_start_lesson(request: DocStartLearningRequest):
+async def doc_start_lesson(
+    request: DocStartLearningRequest,
+    owner_id: str = Depends(get_owner_id),
+):
     """文档模式：开始讲课"""
-    doc_context = _get_doc_context(request.doc_id)
-    graph_data = _load_doc_graph(request.doc_id)
+    doc_context = _get_doc_context(owner_id, request.doc_id)
+    graph_data = _load_doc_graph(owner_id, request.doc_id)
     source_text = _get_node_source_text(doc_context, request.node_name, graph_data or {})
 
-    service = _get_doc_service(request.doc_id)
+    service = _get_doc_service(owner_id, request.doc_id)
     kp = service.get_knowledge_point(request.node_name)
     if not kp:
         raise HTTPException(status_code=404, detail="Knowledge point not found")
@@ -302,13 +364,16 @@ async def doc_start_lesson(request: DocStartLearningRequest):
 
 
 @doc_router.post("/learning/next-step")
-async def doc_next_step(request: DocStartLearningRequest):
+async def doc_next_step(
+    request: DocStartLearningRequest,
+    owner_id: str = Depends(get_owner_id),
+):
     """文档模式：推进到下一步"""
-    doc_context = _get_doc_context(request.doc_id)
-    graph_data = _load_doc_graph(request.doc_id)
+    doc_context = _get_doc_context(owner_id, request.doc_id)
+    graph_data = _load_doc_graph(owner_id, request.doc_id)
     source_text = _get_node_source_text(doc_context, request.node_name, graph_data or {})
 
-    service = _get_doc_service(request.doc_id)
+    service = _get_doc_service(owner_id, request.doc_id)
     kp = service.get_knowledge_point(request.node_name)
     if not kp:
         raise HTTPException(status_code=404, detail="Knowledge point not found")
@@ -354,13 +419,16 @@ async def doc_next_step(request: DocStartLearningRequest):
 
 
 @doc_router.post("/learning/reteach")
-async def doc_reteach(request: DocReteachRequest):
+async def doc_reteach(
+    request: DocReteachRequest,
+    owner_id: str = Depends(get_owner_id),
+):
     """文档模式：根据错误重新讲解"""
-    doc_context = _get_doc_context(request.doc_id)
-    graph_data = _load_doc_graph(request.doc_id)
+    doc_context = _get_doc_context(owner_id, request.doc_id)
+    graph_data = _load_doc_graph(owner_id, request.doc_id)
     source_text = _get_node_source_text(doc_context, request.node_name, graph_data or {})
 
-    service = _get_doc_service(request.doc_id)
+    service = _get_doc_service(owner_id, request.doc_id)
     kp = service.get_knowledge_point(request.node_name)
     if not kp:
         raise HTTPException(status_code=404, detail="Knowledge point not found")
@@ -403,13 +471,16 @@ async def doc_reteach(request: DocReteachRequest):
 # ============================================================================
 
 @doc_router.post("/learning/question")
-async def doc_generate_question(request: DocStartLearningRequest):
+async def doc_generate_question(
+    request: DocStartLearningRequest,
+    owner_id: str = Depends(get_owner_id),
+):
     """文档模式：基于文档内容出题"""
-    doc_context = _get_doc_context(request.doc_id)
-    graph_data = _load_doc_graph(request.doc_id)
+    doc_context = _get_doc_context(owner_id, request.doc_id)
+    graph_data = _load_doc_graph(owner_id, request.doc_id)
     source_text = _get_node_source_text(doc_context, request.node_name, graph_data or {})
 
-    service = _get_doc_service(request.doc_id)
+    service = _get_doc_service(owner_id, request.doc_id)
     kp = service.get_knowledge_point(request.node_name)
     if not kp:
         raise HTTPException(status_code=404, detail="Knowledge point not found")
@@ -453,13 +524,16 @@ async def doc_generate_question(request: DocStartLearningRequest):
 
 
 @doc_router.post("/learning/evaluate")
-async def doc_evaluate(request: DocEvaluateRequest):
+async def doc_evaluate(
+    request: DocEvaluateRequest,
+    owner_id: str = Depends(get_owner_id),
+):
     """文档模式：基于文档内容评估"""
-    doc_context = _get_doc_context(request.doc_id)
-    graph_data = _load_doc_graph(request.doc_id)
+    doc_context = _get_doc_context(owner_id, request.doc_id)
+    graph_data = _load_doc_graph(owner_id, request.doc_id)
     source_text = _get_node_source_text(doc_context, request.node_name, graph_data or {})
 
-    service = _get_doc_service(request.doc_id)
+    service = _get_doc_service(owner_id, request.doc_id)
     kp = service.get_knowledge_point(request.node_name)
     if not kp:
         raise HTTPException(status_code=404, detail="Knowledge point not found")
@@ -523,13 +597,16 @@ async def doc_evaluate(request: DocEvaluateRequest):
 # ============================================================================
 
 @doc_router.post("/learning/chat")
-async def doc_chat(request: DocChatRequest):
+async def doc_chat(
+    request: DocChatRequest,
+    owner_id: str = Depends(get_owner_id),
+):
     """文档模式：基于文档内容的自由讨论"""
-    doc_context = _get_doc_context(request.doc_id)
-    graph_data = _load_doc_graph(request.doc_id)
+    doc_context = _get_doc_context(owner_id, request.doc_id)
+    graph_data = _load_doc_graph(owner_id, request.doc_id)
     source_text = _get_node_source_text(doc_context, request.node_name, graph_data or {})
 
-    service = _get_doc_service(request.doc_id)
+    service = _get_doc_service(owner_id, request.doc_id)
     kp = service.get_knowledge_point(request.node_name)
     if not kp:
         raise HTTPException(status_code=404, detail="Knowledge point not found")
@@ -561,11 +638,14 @@ async def doc_chat(request: DocChatRequest):
 
 
 @doc_router.post("/learning/lesson/stream")
-async def doc_start_lesson_stream(request: DocStartLearningRequest):
-    doc_context = _get_doc_context(request.doc_id)
-    graph_data = _load_doc_graph(request.doc_id)
+async def doc_start_lesson_stream(
+    request: DocStartLearningRequest,
+    owner_id: str = Depends(get_owner_id),
+):
+    doc_context = _get_doc_context(owner_id, request.doc_id)
+    graph_data = _load_doc_graph(owner_id, request.doc_id)
     source_text = _get_node_source_text(doc_context, request.node_name, graph_data or {})
-    service = _get_doc_service(request.doc_id)
+    service = _get_doc_service(owner_id, request.doc_id)
     kp = service.get_knowledge_point(request.node_name)
     if not kp:
         raise HTTPException(status_code=404, detail="Knowledge point not found")
@@ -578,11 +658,14 @@ async def doc_start_lesson_stream(request: DocStartLearningRequest):
 
 
 @doc_router.post("/learning/next-step/stream")
-async def doc_next_step_stream(request: DocStartLearningRequest):
-    doc_context = _get_doc_context(request.doc_id)
-    graph_data = _load_doc_graph(request.doc_id)
+async def doc_next_step_stream(
+    request: DocStartLearningRequest,
+    owner_id: str = Depends(get_owner_id),
+):
+    doc_context = _get_doc_context(owner_id, request.doc_id)
+    graph_data = _load_doc_graph(owner_id, request.doc_id)
     source_text = _get_node_source_text(doc_context, request.node_name, graph_data or {})
-    service = _get_doc_service(request.doc_id)
+    service = _get_doc_service(owner_id, request.doc_id)
     kp = service.get_knowledge_point(request.node_name)
     if not kp:
         raise HTTPException(status_code=404, detail="Knowledge point not found")
@@ -606,11 +689,14 @@ async def doc_next_step_stream(request: DocStartLearningRequest):
 
 
 @doc_router.post("/learning/reteach/stream")
-async def doc_reteach_stream(request: DocReteachRequest):
-    doc_context = _get_doc_context(request.doc_id)
-    graph_data = _load_doc_graph(request.doc_id)
+async def doc_reteach_stream(
+    request: DocReteachRequest,
+    owner_id: str = Depends(get_owner_id),
+):
+    doc_context = _get_doc_context(owner_id, request.doc_id)
+    graph_data = _load_doc_graph(owner_id, request.doc_id)
     source_text = _get_node_source_text(doc_context, request.node_name, graph_data or {})
-    service = _get_doc_service(request.doc_id)
+    service = _get_doc_service(owner_id, request.doc_id)
     kp = service.get_knowledge_point(request.node_name)
     if not kp:
         raise HTTPException(status_code=404, detail="Knowledge point not found")
@@ -623,11 +709,14 @@ async def doc_reteach_stream(request: DocReteachRequest):
 
 
 @doc_router.post("/learning/chat/stream")
-async def doc_chat_stream(request: DocChatRequest):
-    doc_context = _get_doc_context(request.doc_id)
-    graph_data = _load_doc_graph(request.doc_id)
+async def doc_chat_stream(
+    request: DocChatRequest,
+    owner_id: str = Depends(get_owner_id),
+):
+    doc_context = _get_doc_context(owner_id, request.doc_id)
+    graph_data = _load_doc_graph(owner_id, request.doc_id)
     source_text = _get_node_source_text(doc_context, request.node_name, graph_data or {})
-    service = _get_doc_service(request.doc_id)
+    service = _get_doc_service(owner_id, request.doc_id)
     kp = service.get_knowledge_point(request.node_name)
     if not kp:
         raise HTTPException(status_code=404, detail="Knowledge point not found")
@@ -653,27 +742,42 @@ async def doc_chat_stream(request: DocChatRequest):
 # ============================================================================
 
 @doc_router.post("/graph/save")
-async def doc_save_graph(request: GenerateDocGraphRequest):
-    """保存文档模式星图（目前未使用，预留接口）"""
-    # TODO: 实现图谱保存逻辑
+async def doc_save_graph(
+    request: SaveDocGraphRequest,
+    owner_id: str = Depends(get_owner_id),
+):
+    """保存文档模式星图到当前账号名下"""
+    # 先确认这份文档确实属于调用者，否则任何人都能往别人的 doc_id 上写图谱。
+    _get_doc_context(owner_id, request.doc_id)
+    service = _get_doc_service(owner_id, request.doc_id)
+    try:
+        saved = service.save_graph(
+            topic=_doc_topic(request.doc_id), graph_data=request.graph_data
+        )
+    except PayloadTooLarge as exc:
+        raise HTTPException(status_code=413, detail="文档星图过大，无法保存") from exc
+    if not saved:
+        raise HTTPException(status_code=500, detail="文档星图保存失败")
     return {"status": "success"}
 
 
 @doc_router.delete("/graph/delete")
-async def doc_delete_graph(doc_id: str):
-    """删除文档模式的星图和相关文件"""
-    service = _get_doc_service(doc_id)
-    service.delete_graph(topic=f"doc_{doc_id}")
+async def doc_delete_graph(
+    doc_id: str,
+    owner_id: str = Depends(get_owner_id),
+):
+    """删除当前账号下该文档的星图、上下文与原始 PDF"""
+    doc_id = _safe_doc_id(doc_id)
+    service = _get_doc_service(owner_id, doc_id)
+    service.delete_graph(topic=_doc_topic(doc_id))
 
-    # 清理内存缓存
-    _doc_cache.pop(doc_id, None)
+    learning_store.delete_document(owner_id, doc_id)
+    _doc_cache.pop((owner_id, doc_id), None)
 
-    # 清理磁盘上的文档上下文和 PDF 文件
-    context_file = _UPLOAD_DIR / f"{doc_id}_context.json"
-    pdf_file = _UPLOAD_DIR / f"{doc_id}.pdf"
-    for f in [context_file, pdf_file]:
-        if f.exists():
-            f.unlink()
-            logger.info(f"已删除文件: {f}")
+    # 只删自己目录下的文件；其他账号上传的同一份 PDF 不受影响
+    pdf_file = owner_upload_path(owner_id, doc_id, _UPLOAD_ROOT)
+    if pdf_file.exists():
+        pdf_file.unlink()
+        logger.info("已删除文件: %s", pdf_file)
 
     return {"status": "success"}

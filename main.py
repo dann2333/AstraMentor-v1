@@ -6,15 +6,14 @@ AstraMentor - 双Agent教学系统
 
 import logging
 import sys
-from pathlib import Path
 
 from services.learning_service import LearningService
+from services.database import ANONYMOUS_OWNER_ID
 from core.learner_state import LearnerState, KnowledgePoint
 from core.constants import LearningLevel
 from utils.api_client import APIClient
 from core.constants import LearningLevel
 from utils.api_client import APIClient
-import json
 
 
 # 配置日志
@@ -32,11 +31,15 @@ class AstraMentor:
     现在作为 LearningService 的 CLI 包装器
     """
 
-    def __init__(self, state_file: str = "learner_state.json"):
+    def __init__(self, topic: str = "", owner_id: str = ANONYMOUS_OWNER_ID):
         """
         初始化AstraMentor
+
+        Args:
+            topic: 学习主题，用于隔离状态；留空则使用该账号的默认状态
+            owner_id: 状态归属账号，默认落在本地访客账号下
         """
-        self.service = LearningService(state_file=state_file)
+        self.service = LearningService(topic=topic, owner_id=owner_id)
         self.knowledge_graph = self.service.knowledge_graph # Forward compatibility for property access
         self.learner_state = self.service.learner_state
         logger.info("AstraMentor (CLI) 初始化完成")
@@ -419,17 +422,15 @@ def main():
         selected_attrs["user_note"] = user_note
         has_changes = True
 
-    # 保存更新后的数据到文件
+    # 保存更新后的数据
     if has_changes:
         selected_node["attributes"] = selected_attrs
-        test_data_dir = Path("test_data")
-        graph_filename = (
-            f"knowledge_graph_{topic.replace(' ', '_').replace('/', '_')}.json"
-        )
-        graph_file = test_data_dir / graph_filename
-        with open(graph_file, "w", encoding="utf-8") as f:
-            json.dump(graph_data, f, ensure_ascii=False, indent=2)
-        print(f"✅ 已保存更新到知识星图")
+        # NOTE: 走和 Web 端同一套存储。之前这里直接往 test_data/ 写 JSON，
+        # 而应用早已不再读那些文件：CLI 会打印"已保存"，改动却根本没生效。
+        if mentor.service.save_graph(topic=topic, graph_data=graph_data):
+            print("✅ 已保存更新到知识星图")
+        else:
+            print("⚠️ 保存知识星图失败，本次调整未生效")
 
     # 第四步：开始学习
     print(f"\n📊 学习参数（基于 AI 分析）：")

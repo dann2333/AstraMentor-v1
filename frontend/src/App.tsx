@@ -1,4 +1,4 @@
-import { lazy, Suspense, useState, useEffect } from 'react';
+import { lazy, Suspense, useState, useEffect, useRef } from 'react';
 import { Toaster, toast } from 'sonner';
 import { api } from './api/client';
 import { streamLearning } from './api/stream';
@@ -18,6 +18,14 @@ import { Card, CardContent, CardHeader, CardTitle } from './components/ui/card';
 import { ResizableHandle, ResizablePanel, ResizablePanelGroup } from "./components/ui/resizable"
 import { HistorySidebar, type GraphSession } from './features/sidebar/HistorySidebar';
 import { useLanguage } from './contexts/LanguageContext';
+import { useAuth } from './contexts/AuthContext';
+import { AuthDialog } from './features/auth/AuthDialog';
+import { ClassroomWorkspace } from './features/classroom/ClassroomWorkspace';
+import { AccountMenu } from './features/auth/AccountMenu';
+import { GlassFilters } from './components/glass/GlassFilters';
+import { GlassAmbience } from './components/glass/GlassAmbience';
+import { AnimatePresence, motion } from 'motion/react';
+import { pageVariants } from './lib/motion';
 
 // The graph renderer and Monaco editor are the two heaviest optional surfaces.
 // Loading them only after entering a learning session keeps the course catalog fast.
@@ -105,6 +113,13 @@ function App() {
   const [isGenerating, setIsGenerating] = useState(false);
   const [isChatLoading, setIsChatLoading] = useState(false);
   const [contextMenuNode, setContextMenuNode] = useState<ContextMenuNode | null>(null);
+  // 账号与班级两个入口在首页和学习页都要用，状态提到最外层。
+  const { user, isRestoring } = useAuth();
+  // 当前打开的这堂课属于谁。退出登录后自动保存若照常发出，
+  // 这份私有快照会以访客身份写进共享空间，任何未登录的人都能读到。
+  const lessonOwnerRef = useRef<string | null>(null);
+  const [showAuthDialog, setShowAuthDialog] = useState(false);
+  const [showClassrooms, setShowClassrooms] = useState(false);
   const [isDialogOpen, setIsDialogOpen] = useState(false);
   // whether the lesson has actually started for the current node; used to stop regenerating plans
   const [lessonStarted, setLessonStarted] = useState(false);
@@ -175,8 +190,26 @@ function App() {
   const [graphSessions, setGraphSessions] = useState<FullGraphSession[]>([]);
   const [currentSessionId, setCurrentSessionId] = useState<string>(() => Date.now().toString()); // Start with a default ID
 
-  // Load initial state
+  // Load initial state.
+  // 依赖 user?.id：登录、切换账号、退出登录都会换掉数据归属，必须重新拉取，
+  // 否则界面上留着的是上一个身份的会话与进度。
+  // 也依赖 isRestoring：带着已存令牌启动时要先等身份确认，否则这一轮请求会
+  // 带着尚未验证的令牌发出；令牌已过期时它们全部 401，而 user?.id 从头到尾
+  // 都是 undefined，effect 不会再跑，历史栏就永远空着。
   useEffect(() => {
+    if (isRestoring) return;
+
+    // 身份换了就丢掉上一份数据，别让它留在界面上、更别让它被存回新身份名下。
+    const owner = user?.id ?? null;
+    if (lessonOwnerRef.current !== owner) {
+      lessonOwnerRef.current = owner;
+      setShowLanding(true);
+      setGraphData(null);
+      setSelectedNode(null);
+      setNodeSessions({});
+      setChatMessages([]);
+    }
+
     loadState();
     void api.listSessions().then((sessions) => {
       setGraphSessions(sessions.map((session) => ({
@@ -194,7 +227,7 @@ function App() {
         courseTitle: session.course_title,
       })));
     }).catch((error) => console.error('Failed to load session history:', error));
-  }, []);
+  }, [user?.id, isRestoring]);
 
   const loadState = async () => {
     try {
@@ -390,6 +423,8 @@ function App() {
 
   const saveCurrentSession = () => {
       if (!graphData) return;
+      // 身份变了（退出、切号、令牌过期）就绝不落盘：这份数据属于上一个身份。
+      if (lessonOwnerRef.current !== (user?.id ?? null)) return;
 
       // NOTE: 将当前正在查看的节点的对话状态合并到 nodeSessions 快照中，
       // 避免切换星图后当前节点的聊天记录丢失
@@ -1426,7 +1461,23 @@ ${evaluation.feedback}
   };
 
   return (
-    <div className={showLanding ? "bg-background min-h-screen" : "flex flex-col h-screen bg-background text-foreground relative"}>
+    <div className={showLanding ? "bg-background min-h-screen relative" : "flex flex-col h-screen bg-background text-foreground relative"}>
+       {/* 玻璃材质的两个前置件：折射滤镜定义，以及背后的氛围光。
+           毛玻璃需要背后有东西可透，纯色背景上再精细的材质也看不出来。 */}
+       <GlassFilters />
+       <GlassAmbience />
+
+       {/* 登录与班级：首页和学习页共用同一份状态 */}
+       <AuthDialog open={showAuthDialog} onOpenChange={setShowAuthDialog} />
+       <ClassroomWorkspace
+          open={showClassrooms}
+          onOpenChange={setShowClassrooms}
+          onRequestLogin={() => {
+            setShowClassrooms(false);
+            setShowAuthDialog(true);
+          }}
+       />
+
        {/* Node Details Modal */ }
        <NodeDetailsModal 
           node={contextMenuNode} 
@@ -1436,8 +1487,22 @@ ${evaluation.feedback}
           onDelete={handleDeleteNode}
        />
 
+       <AnimatePresence mode="wait" initial={false}>
        {showLanding ? (
+         <motion.div
+           key="landing"
+           variants={pageVariants}
+           initial="hidden"
+           animate="visible"
+           exit="exit"
+         >
            <HomePage
+             accountMenu={
+               <AccountMenu
+                 onRequestLogin={() => setShowAuthDialog(true)}
+                 onOpenClassrooms={() => setShowClassrooms(true)}
+               />
+             }
              onStart={() => setIsDialogOpen(true)}
              onUploadDoc={() => setIsDialogOpen(true)}
              onSelectCourse={handleStartCourse}
@@ -1447,9 +1512,18 @@ ${evaluation.feedback}
              courseRecovery={courseRecovery}
              onCourseRecoveryHandled={() => setCourseRecovery(null)}
            />
+         </motion.div>
        ) : (
+         <motion.div
+           key="workspace"
+           className="flex h-full flex-col"
+           variants={pageVariants}
+           initial="hidden"
+           animate="visible"
+           exit="exit"
+         >
            <div className="flex flex-col h-full bg-background/50"> {/* Soft background wrapper */}
-              <header className="px-6 py-4 flex items-center justify-between bg-transparent z-10 relative">
+              <header className="glass glass--regular glass--grain glass--refract mx-4 mt-3 flex items-center justify-between rounded-[var(--glass-radius-lg)] px-5 py-3 relative z-10">
                   <div className="flex items-center gap-4">
                     <Button variant="ghost" size="icon" onClick={() => setShowHistory(!showHistory)} className="mr-1 hover:bg-white/50">
                         <Menu className="h-6 w-6 text-foreground/80" />
@@ -1489,6 +1563,11 @@ ${evaluation.feedback}
                         >
                             {theme === 'dark' ? <BookOpen className="h-4 w-4" /> : <Sun className="h-4 w-4" />}
                         </Button>
+
+                        <AccountMenu
+                            onRequestLogin={() => setShowAuthDialog(true)}
+                            onOpenClassrooms={() => setShowClassrooms(true)}
+                        />
 
                         {teachingPlan && !isPlanView && (
                             <Button 
@@ -1715,8 +1794,10 @@ ${evaluation.feedback}
                 </div>
               </main>
            </div>
+         </motion.div>
        )}
-       
+       </AnimatePresence>
+
        <GenerateGraphDialog 
            open={isDialogOpen} 
            onOpenChange={setIsDialogOpen}
