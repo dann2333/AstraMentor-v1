@@ -277,7 +277,15 @@ class Database:
     # Schema
     # ------------------------------------------------------------------
     def initialize(self) -> None:
-        """Create or upgrade the schema exactly once per process."""
+        """Create or upgrade the schema exactly once per process.
+
+        ``self._lock`` 只挡得住同一进程内的线程。多进程（gunicorn -w 4、
+        多副本共享一个卷、服务器起来的同时跑了一个管理脚本）会同时走到这里，
+        因此真正的判断必须在 ``BEGIN IMMEDIATE`` 拿到写锁**之后**再做一次：
+        输的那个进程醒来时 user_version 已经是最新的，直接退出即可。
+        少了这一步，v2 里那几条 ``ALTER TABLE ADD COLUMN`` 会被重复执行，
+        抛出 "duplicate column name" —— 而且是在一个正在处理的请求里抛。
+        """
         if self._initialized:
             return
         with self._lock:
@@ -289,10 +297,17 @@ class Database:
                 if current < SCHEMA_VERSION:
                     connection.execute("BEGIN IMMEDIATE")
                     try:
-                        for statements in MIGRATIONS[current:SCHEMA_VERSION]:
-                            for statement in statements:
-                                connection.execute(statement)
-                        connection.execute(f"PRAGMA user_version = {SCHEMA_VERSION}")
+                        # 拿到写锁后重新读一次：期间可能已被别的进程升级完。
+                        current = connection.execute(
+                            "PRAGMA user_version"
+                        ).fetchone()[0]
+                        if current < SCHEMA_VERSION:
+                            for statements in MIGRATIONS[current:SCHEMA_VERSION]:
+                                for statement in statements:
+                                    connection.execute(statement)
+                            connection.execute(
+                                f"PRAGMA user_version = {SCHEMA_VERSION}"
+                            )
                     except BaseException:
                         connection.execute("ROLLBACK")
                         raise
