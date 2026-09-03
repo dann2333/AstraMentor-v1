@@ -46,7 +46,10 @@ const DialogContent = React.forwardRef<
       ref={ref}
       data-glass-modal=""
       className={cn(
-        "glass glass--thick glass--grain glass--refract glass--lit",
+        // 不加 glass--lit：指针高光在按钮那种小面积上是"液态"，
+        // 铺在整个模态上只会变成一团糊在中间的光斑，而且 :focus-within
+        // 一聚焦输入框它就亮起来，位置还在默认的顶部中央。
+        "glass glass--thick glass--grain glass--refract",
         "fixed left-1/2 top-1/2 z-50 grid w-full max-w-lg -translate-x-1/2 -translate-y-1/2",
         "max-h-[86vh] gap-4 overflow-y-auto p-6 text-foreground",
         className

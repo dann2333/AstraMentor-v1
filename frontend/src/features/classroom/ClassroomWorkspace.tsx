@@ -200,7 +200,7 @@ function TeacherView() {
                 <div className="space-y-4 rounded-lg border p-4">
                     <div className="flex flex-wrap items-center gap-3">
                         <span className="text-sm text-muted-foreground">邀请码</span>
-                        <code className="rounded bg-muted px-2 py-1 font-mono tracking-widest">
+                        <code className="glass-inset px-3 py-1.5 font-mono text-sm tracking-[0.25em] text-foreground">
                             {selected.join_code}
                         </code>
                         <Button

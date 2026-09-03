@@ -438,15 +438,22 @@ button:active:not(:disabled) { transform: scale(0.97); }
   to   { opacity: 0; }
 }
 
+/* NOTE: 关键帧里**不能**再写 translate(-50%, -50%)。
+   Tailwind v4 的 `-translate-x-1/2` 用的是独立的 `translate` 属性，
+   而 `translate` 与 `transform` 是相加的：两边都写一遍，居中偏移会翻倍，
+   对话框会整体上移半个自身高度、顶部被裁掉。
+   居中交给 Tailwind 的 translate，这里只负责缩放、位移与模糊。 */
 @keyframes glass-modal-in {
   from {
     opacity: 0;
-    transform: translate(-50%, -46%) scale(0.94);
+    scale: 0.94;
+    transform: translateY(16px);
     filter: blur(6px);
   }
   to {
     opacity: 1;
-    transform: translate(-50%, -50%) scale(1);
+    scale: 1;
+    transform: translateY(0);
     filter: blur(0);
   }
 }
@@ -454,11 +461,13 @@ button:active:not(:disabled) { transform: scale(0.97); }
 @keyframes glass-modal-out {
   from {
     opacity: 1;
-    transform: translate(-50%, -50%) scale(1);
+    scale: 1;
+    transform: translateY(0);
   }
   to {
     opacity: 0;
-    transform: translate(-50%, -48%) scale(0.97);
+    scale: 0.97;
+    transform: translateY(8px);
     filter: blur(4px);
   }
 }
