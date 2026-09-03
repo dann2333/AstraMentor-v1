@@ -72,11 +72,45 @@ class LearningConfig:
 
 
 @dataclass
+class StorageConfig:
+    """本地数据存储配置（SQLite）"""
+
+    # SQLite 数据库文件路径
+    database_path: str = field(
+        default_factory=lambda: os.getenv(
+            "ASTRA_DB_PATH", str(Path("user_data") / "astramentor.db")
+        )
+    )
+
+
+@dataclass
+class AuthConfig:
+    """登录与账号安全配置"""
+
+    # 访问令牌有效期（小时），默认 7 天
+    token_ttl_hours: int = field(
+        default_factory=lambda: int(os.getenv("ASTRA_AUTH_TOKEN_TTL_HOURS", "168"))
+    )
+
+    # 连续登录失败多少次后临时锁定账号（0 表示不锁定）
+    max_failed_attempts: int = field(
+        default_factory=lambda: int(os.getenv("ASTRA_AUTH_MAX_FAILED_ATTEMPTS", "8"))
+    )
+
+    # 锁定时长（分钟）
+    lockout_minutes: int = field(
+        default_factory=lambda: int(os.getenv("ASTRA_AUTH_LOCKOUT_MINUTES", "15"))
+    )
+
+
+@dataclass
 class Config:
     """全局配置类"""
 
     api: APIConfig = field(default_factory=APIConfig)
     learning: LearningConfig = field(default_factory=LearningConfig)
+    storage: StorageConfig = field(default_factory=StorageConfig)
+    auth: AuthConfig = field(default_factory=AuthConfig)
 
 
 # 全局配置实例
