@@ -11,7 +11,7 @@ import { AddNodeDialog } from './features/graph/AddNodeDialog';
 import Dashboard from './features/dashboard/Dashboard';
 import HomePage from './features/home/HomePage';
 import { Button } from './components/ui/button';
-import { Search, Loader2, Book, Menu, Sun, BookOpen, Code, Sparkles, Plus } from 'lucide-react';
+import { Search, Loader2, Book, Menu, Sun, BookOpen, Code, Sparkles, Plus, FileText, Rocket } from 'lucide-react';
 import { GenerateGraphDialog } from './features/graph/GenerateGraphDialog';
 import { ScrollArea } from './components/ui/scroll-area';
 import { Card, CardContent, CardHeader, CardTitle } from './components/ui/card';
@@ -24,6 +24,7 @@ import { ClassroomWorkspace } from './features/classroom/ClassroomWorkspace';
 import { AccountMenu } from './features/auth/AccountMenu';
 import { GlassFilters } from './components/glass/GlassFilters';
 import { GlassAmbience } from './components/glass/GlassAmbience';
+import { ParticleField } from './components/glass/ParticleField';
 import { AnimatePresence, motion } from 'motion/react';
 import { pageVariants } from './lib/motion';
 
@@ -1192,7 +1193,7 @@ function App() {
 
           setChatMessages(prev => [
               ...prev,
-              { role: 'assistant', content: `**Quiz Time!** 🧠\n\n${formattedQuestion}`, citations: questionResponse.citations, knowledgeScope: questionResponse.knowledge_scope }
+              { role: 'assistant', content: `**来道题**\n\n${formattedQuestion}`, citations: questionResponse.citations, knowledgeScope: questionResponse.knowledge_scope }
           ]);
           setInteractionState('quiz');
       } catch (error) {
@@ -1405,10 +1406,10 @@ function App() {
             : await api.evaluateAnswer(currentTopic, selectedNode.name, currentQuestion, message, activeCourseId || undefined, currentQuestionId);
           
            const feedbackContent = `
-**测验结果** 📝
+**这道题的结果**
 
 *   **得分：** ${Math.round(evaluation.score * 100)}%
-*   **状态：** ${evaluation.is_mastered ? "✅ 已掌握" : "📚 继续学习"}
+*   **判定：** ${evaluation.is_mastered ? "算掌握了" : "还得再练"}
 
 ${evaluation.feedback}
            `;
@@ -1466,6 +1467,7 @@ ${evaluation.feedback}
            毛玻璃需要背后有东西可透，纯色背景上再精细的材质也看不出来。 */}
        <GlassFilters />
        <GlassAmbience />
+       <ParticleField />
 
        {/* 登录与班级：首页和学习页共用同一份状态 */}
        <AuthDialog open={showAuthDialog} onOpenChange={setShowAuthDialog} />
@@ -1525,19 +1527,19 @@ ${evaluation.feedback}
            <div className="flex flex-col h-full bg-background/50"> {/* Soft background wrapper */}
               <header className="glass glass--regular glass--grain glass--refract mx-4 mt-3 flex items-center justify-between rounded-[var(--glass-radius-lg)] px-5 py-3 relative z-10">
                   <div className="flex items-center gap-4">
-                    <Button variant="ghost" size="icon" onClick={() => setShowHistory(!showHistory)} className="mr-1 hover:bg-white/50">
+                    <Button variant="ghost" size="icon" onClick={() => setShowHistory(!showHistory)} className="mr-1">
                         <Menu className="h-6 w-6 text-foreground/80" />
                     </Button>
                     
                     <div className="flex items-center gap-4">
                         <div 
-                            className="p-1 bg-transparent rounded-xl cursor-pointer hover:bg-white/50 transition-colors" 
+                            className="cursor-pointer rounded-[var(--glass-radius-sm)] p-1 transition-colors hover:bg-foreground/10"
                             onClick={() => setShowLanding(true)} 
                             title="Back to Home"
                         >
                             <img src="/logo.png" alt="AstraMentor Logo" className="w-10 h-10 object-contain mx-1 my-1" />
                         </div>
-                        <h1 className="text-xl font-bold bg-gradient-to-r from-blue-600 to-cyan-500 bg-clip-text text-transparent tracking-tight">
+                        <h1 className="text-xl font-bold tracking-tight text-foreground">
                           AstraMentor
                         </h1>
                     </div>
@@ -1548,7 +1550,7 @@ ${evaluation.feedback}
                             variant="ghost"
                             size="icon"
                             onClick={() => setLanguage(language === 'zh' ? 'en' : 'zh')}
-                            className="h-9 w-9 text-muted-foreground hover:text-foreground hover:bg-white/50 rounded-xl"
+                            className="h-9 w-9 rounded-[var(--glass-radius-sm)] text-muted-foreground hover:text-foreground"
                             title={language === 'zh' ? "Switch to English" : "切换到中文"}
                         >
                             <span className="text-sm font-bold font-mono">{language === 'zh' ? 'En' : 'Zh'}</span>
@@ -1558,7 +1560,7 @@ ${evaluation.feedback}
                             variant="ghost"
                             size="icon"
                             onClick={() => setTheme(theme === 'dark' ? 'eye-care' : 'dark')}
-                            className={theme === 'eye-care' ? "h-9 w-9 bg-amber-100/50 text-amber-900 hover:bg-amber-200/50 rounded-xl" : "h-9 w-9 text-muted-foreground hover:text-foreground hover:bg-white/50 rounded-xl"}
+                            className={theme === 'eye-care' ? "h-9 w-9 rounded-[var(--glass-radius-sm)] bg-accent/20 text-accent-foreground hover:bg-accent/30" : "h-9 w-9 rounded-[var(--glass-radius-sm)] text-muted-foreground hover:text-foreground"}
                             title={theme === 'dark' ? "切换到护眼亮色模式" : "切换到高对比夜间模式"}
                         >
                             {theme === 'dark' ? <BookOpen className="h-4 w-4" /> : <Sun className="h-4 w-4" />}
@@ -1574,7 +1576,7 @@ ${evaluation.feedback}
                                 variant={showPlanPanel ? "secondary" : "ghost"} 
                                 size="sm"
                                 onClick={() => setShowPlanPanel(!showPlanPanel)}
-                                className={showPlanPanel ? "bg-white shadow-sm text-blue-700 rounded-xl" : "text-muted-foreground hover:bg-white/50 rounded-xl"}
+                                className={showPlanPanel ? "rounded-[var(--glass-radius-sm)]" : "rounded-[var(--glass-radius-sm)] text-muted-foreground"}
                             >
                                 <Book className="mr-2 h-4 w-4" />
                                 {showPlanPanel ? t('app.hide_plan') : t('app.view_plan')}
@@ -1594,7 +1596,7 @@ ${evaluation.feedback}
                                     setShowGraphPanel(previousGraphState);
                                 }
                             }}
-                            className={showIDE ? "bg-white shadow-sm text-green-700 rounded-xl" : "text-muted-foreground hover:bg-white/50 rounded-xl"}
+                            className={showIDE ? "rounded-[var(--glass-radius-sm)]" : "rounded-[var(--glass-radius-sm)] text-muted-foreground"}
                             title="Open Code Editor"
                         >
                             <Code className="mr-2 h-4 w-4" />
@@ -1608,7 +1610,7 @@ ${evaluation.feedback}
                                 setShowGraphPanel(!showGraphPanel);
                                 if (!showGraphPanel) setShowIDE(false); 
                             }}
-                            className={showGraphPanel ? "bg-white shadow-sm text-slate-700 rounded-xl" : "text-muted-foreground hover:bg-white/50 rounded-xl"}
+                            className={showGraphPanel ? "rounded-[var(--glass-radius-sm)]" : "rounded-[var(--glass-radius-sm)] text-muted-foreground"}
                         >
                             <Search className="mr-2 h-4 w-4" />
                             {showGraphPanel ? t('app.hide_graph') : t('app.view_graph')}
@@ -1619,27 +1621,27 @@ ${evaluation.feedback}
                 <div className="flex items-center gap-2">
                   {/* 文档模式标识 */}
                   {docMode && (
-                    <span className="px-3 py-1 rounded-full bg-purple-100 text-purple-700 text-xs font-medium">
-                      📄 {docFilename}
+                    <span className="glass glass--thin glass--grain inline-flex items-center gap-1.5 rounded-[var(--glass-radius-pill)] px-3 py-1 text-xs font-medium text-foreground/85">
+                      <FileText className="h-3 w-3" /> {docFilename}
                     </span>
                   )}
                   {/* 项目模式标识 */}
                   {projectMode && (
-                    <span className="px-3 py-1 rounded-full bg-emerald-100 text-emerald-700 text-xs font-medium truncate max-w-[200px]" title={projectDescription}>
-                      🚀 {t('project.mode_label')}
+                    <span className="glass glass--thin glass--grain inline-flex max-w-[200px] items-center gap-1.5 truncate rounded-[var(--glass-radius-pill)] px-3 py-1 text-xs font-medium text-foreground/85" title={projectDescription}>
+                      <Rocket className="h-3 w-3 shrink-0" /> {t('project.mode_label')}
                     </span>
                   )}
                   {graphData && (
                     <Button
                       onClick={() => setIsAddNodeDialogOpen(true)}
                       variant="outline"
-                      className="shadow-md hover:shadow-lg transition-all duration-300 rounded-xl px-5 border-emerald-300 text-black dark:text-emerald-100 dark:border-emerald-400/60 dark:hover:bg-emerald-400/10 hover:bg-emerald-50 hover:border-emerald-400"
+                      className="px-5"
                     >
                       <Plus className="mr-2 h-4 w-4" />
                       {t('add_node.btn')}
                     </Button>
                   )}
-                  <Button onClick={() => setIsDialogOpen(true)} className="bg-primary/80 hover:bg-primary/90 shadow-lg hover:shadow-xl transition-all duration-300 rounded-xl px-6">
+                  <Button onClick={() => setIsDialogOpen(true)} className="px-6">
                       <Sparkles className="mr-2 h-4 w-4" />
                       {t('app.generate_btn')}
                   </Button>
@@ -1649,7 +1651,7 @@ ${evaluation.feedback}
               <main className="flex-1 flex overflow-hidden p-6 gap-6 pt-0">
                 {/* History Sidebar */}
                 <div className={`transition-all duration-300 ${showHistory ? 'w-64 opacity-100' : 'w-0 opacity-0 overflow-hidden'}`}>
-                    <div className="h-full bg-white/80 backdrop-blur-xl rounded-md dark:rounded-3xl shadow-sm border-[1.5px] border-black dark:border dark:border-white/20 overflow-hidden">
+                    <div className="glass glass--regular glass--grain glass--lit h-full overflow-hidden rounded-[var(--glass-radius-lg)]">
                         <HistorySidebar 
                             isOpen={true} // Always render internal logic if container is visible
                             sessions={graphSessions} 
@@ -1661,8 +1663,8 @@ ${evaluation.feedback}
                     </div>
                 </div>
 
-                <div className="flex-1 flex overflow-hidden bg-white/60 backdrop-blur-xl rounded-md dark:rounded-3xl shadow-sm border-[1.5px] border-black dark:border dark:border-white/20">
-                    <ResizablePanelGroup orientation="horizontal" className="h-full w-full rounded-md dark:rounded-3xl">
+                <div className="glass glass--thin glass--grain glass--lit flex flex-1 overflow-hidden rounded-[var(--glass-radius-lg)]">
+                    <ResizablePanelGroup orientation="horizontal" className="h-full w-full rounded-[var(--glass-radius-lg)]">
                         
                         {!isPlanView && teachingPlan && showPlanPanel && (
                             <>
@@ -1735,7 +1737,7 @@ ${evaluation.feedback}
                         
                         {(showGraphPanel || showIDE) && (
                             <>
-                                <ResizableHandle withHandle className="bg-black dark:bg-transparent opacity-80 dark:opacity-50 hover:opacity-100 w-[1.5px] relative z-10" />
+                                <ResizableHandle withHandle className="relative z-10 w-px bg-foreground/15 transition-colors hover:bg-foreground/30" />
                                 <ResizablePanel defaultSize={teachingPlan && !isPlanView ? "40" : "60"} minSize="10">
                                     <Suspense fallback={<div className="h-full grid place-items-center text-sm text-muted-foreground">正在装载学习空间…</div>}>
                                       {showIDE ? (
@@ -1754,7 +1756,7 @@ ${evaluation.feedback}
                                                 <Dashboard state={learnerState} graphData={graphData} viewMode={graphViewMode} />
                                             </div>
                                             {!graphData && !isGenerating && (
-                                                <div className="absolute inset-0 flex flex-col bg-slate-50/50">
+                                                <div className="absolute inset-0 flex flex-col">
                                                     {/* Spacer to align with ChatInterface header */}
                                                     <div className="py-3 px-6 invisible">
                                                          <div className="flex items-center gap-2 text-base font-medium">
@@ -1765,9 +1767,9 @@ ${evaluation.feedback}
                                                     
                                                     <div className="flex-1 flex flex-col items-center justify-center text-center text-muted-foreground">
                                                         <div className="mb-4">
-                                                            <Sparkles className="w-12 h-12 text-slate-800" strokeWidth={1.5} />
+                                                            <Sparkles className="w-12 h-12 text-foreground/35" strokeWidth={1.5} />
                                                         </div>
-                                                        <h3 className="text-lg font-semibold text-slate-700 mb-2">
+                                                        <h3 className="mb-2 text-lg font-semibold text-foreground">
                                                             {t('app.dialog_title')}
                                                         </h3>
                                                         <p className="max-w-xs text-sm">
@@ -1777,7 +1779,7 @@ ${evaluation.feedback}
                                                 </div>
                                             )}
                                             {isGenerating && (
-                                                <div className="absolute inset-0 flex items-center justify-center bg-white/50 backdrop-blur-sm z-50">
+                                                <div className="absolute inset-0 z-50 flex items-center justify-center bg-background/60 backdrop-blur-sm">
                                                     <div className="flex flex-col items-center gap-2">
                                                         <Loader2 className="w-8 h-8 animate-spin text-primary" />
                                                         <p>{t('graph.generating')}</p>

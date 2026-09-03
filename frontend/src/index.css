@@ -27,6 +27,13 @@
   --color-border: hsl(var(--border));
   --color-input: hsl(var(--input));
   --color-ring: hsl(var(--ring));
+  /* 语义色。做题的对错、上传的成功失败必须一眼分清，但也不能直接抓
+     tailwind 的 green-600 / red-500 —— 那几个饱和度太高，和这套奶油+珊瑚
+     的底子放一起就是两个软件。这里的绿和红都往暖里压过。 */
+  --color-success: hsl(var(--success));
+  --color-success-foreground: hsl(var(--success-foreground));
+  --color-warning: hsl(var(--warning));
+  --color-warning-foreground: hsl(var(--warning-foreground));
 }
 
 :root {
@@ -49,6 +56,10 @@
   --border: 257 25% 40%;
   --input: 251 28% 17%;
   --ring: 45 100% 70%;
+  --success: 152 40% 50%;
+  --success-foreground: 155 45% 10%;
+  --warning: 38 88% 62%;
+  --warning-foreground: 34 60% 12%;
   --radius: 2px;
 }
 
@@ -59,17 +70,26 @@
   --card-foreground: 25 21% 22%;
   --popover: 42 42% 97%;
   --popover-foreground: 25 21% 22%;
-  --primary: 13 65% 52%;
+  /* 亮色主题的这几支原来是照着暗色直接调亮度搬过来的，放到米色底上
+     对比度全都掉线：琥珀色只有 1.75:1（当正文色基本看不见），主色 3.58，
+     报错红 3.65。下面这组值都按 4.5:1（AA 正文）重新压过。 */
+  --primary: 13 68% 44%;
   --primary-foreground: 40 60% 98%;
   --secondary: 40 25% 86%;
   --secondary-foreground: 25 25% 25%;
   --muted: 40 25% 88%;
   --muted-foreground: 28 16% 38%;
-  --accent: 42 72% 58%;
-  --accent-foreground: 25 25% 20%;
+  --accent: 36 78% 33%;
+  --accent-foreground: 40 60% 98%;
   --border: 28 21% 35%;
   --input: 40 30% 92%;
-  --ring: 13 65% 52%;
+  --ring: 13 68% 46%;
+  --destructive: 4 68% 44%;
+  --destructive-foreground: 0 0% 100%;
+  --success: 152 40% 28%;
+  --success-foreground: 40 60% 98%;
+  --warning: 32 78% 32%;
+  --warning-foreground: 40 60% 98%;
 }
 
 @layer base {
@@ -124,24 +144,33 @@ button:active:not(:disabled) { transform: scale(0.97); }
 
 .ai-content strong, .ai-content b, .ai-content h1, .ai-content h2, .ai-content h3 { font-weight: 700; }
 
-.astra-home {
-  min-height: 100vh;
-  position: relative;
-  overflow: hidden;
-  /* 底板要暗、要有层次：氛围光斑浮在它上面，玻璃面板再压在光斑上，
-     三层叠起来才有"透过一块玻璃看见后面的光"的观感。 */
+/* NOTE: 底色画在 body 上，而不是页面容器上。
+   粒子画布是 position: fixed / z-index: 0，容器只要自带不透明背景，
+   就会整个盖在画布之上 —— 粒子一个都看不见，而且很难查。
+   现在的层次是：body 底色 → 粒子 → 页面内容（z-index: 2）。 */
+body {
   background:
     radial-gradient(ellipse 120% 80% at 78% 8%, hsl(var(--primary) / .18), transparent 60%),
     radial-gradient(ellipse 100% 70% at 12% 92%, hsl(var(--accent) / .12), transparent 60%),
     linear-gradient(155deg, hsl(var(--background)) 0%, hsl(250 40% 6%) 58%, hsl(var(--background)) 100%);
-  color: hsl(var(--foreground));
+  background-attachment: fixed;
 }
 
-.eye-care .astra-home {
+.eye-care body,
+body.eye-care {
   background:
     radial-gradient(ellipse 120% 80% at 78% 8%, hsl(var(--primary) / .16), transparent 60%),
     radial-gradient(ellipse 100% 70% at 12% 92%, hsl(var(--accent) / .14), transparent 60%),
     linear-gradient(155deg, hsl(var(--background)) 0%, hsl(40 46% 97%) 58%, hsl(var(--background)) 100%);
+  background-attachment: fixed;
+}
+
+.astra-home {
+  min-height: 100vh;
+  position: relative;
+  overflow: hidden;
+  background: transparent;
+  color: hsl(var(--foreground));
 }
 
 /* 极细的网格纹理留一点，但要退到几乎看不见——它的作用是给玻璃一点可折射的
@@ -186,13 +215,11 @@ button:active:not(:disabled) { transform: scale(0.97); }
 .astra-hero { display: grid; grid-template-columns: .9fr 1.1fr; gap: 64px; align-items: center; min-height: 460px; }
 .pixel-kicker { display: inline-flex; align-items: center; gap: 8px; padding: 8px 14px; border-radius: var(--glass-radius-pill); color: hsl(var(--accent)); font-size: 10px; letter-spacing: .04em; }
 .astra-hero h1 { margin: 28px 0 18px; font-size: clamp(40px, 4vw, 56px); line-height: 1.16; font-weight: 400; letter-spacing: -.04em; }
+/* NOTE: 这里曾经是 orange→yellow 的渐变文字。渐变标题几乎是"AI 生成落地页"
+   的签名，而且它还牺牲了可读性。换成实色，靠字重和字号建立层次。 */
 .astra-hero h1 em {
   font-style: normal;
-  background: linear-gradient(120deg, hsl(var(--primary)) 0%, hsl(var(--accent)) 100%);
-  -webkit-background-clip: text;
-  background-clip: text;
-  -webkit-text-fill-color: transparent;
-  color: transparent;
+  color: hsl(var(--primary));
 }
 .astra-hero__copy > p { max-width: 530px; color: hsl(var(--muted-foreground)); line-height: 1.9; font-family: Inter, "Microsoft YaHei", sans-serif; font-size: 15px; }
 .astra-hero__actions { display: flex; gap: 14px; margin-top: 30px; }
@@ -247,11 +274,15 @@ button:active:not(:disabled) { transform: scale(0.97); }
 .hero-node--two { animation-delay: -2.8s; }
 .hero-node--three { animation-delay: -4.2s; }
 .hero-node--four { animation-delay: -5.1s; }
-.hero-node--core { width: 104px; height: 82px; left: calc(50% - 52px); top: 158px; background: #ffd166; color: #38240b; }
-.hero-node--one { width: 78px; height: 58px; left: 45px; top: 62px; background: #55c1d9; color: #092832; }
-.hero-node--two { width: 82px; height: 60px; right: 42px; top: 58px; background: #66d19e; color: #0b2e20; }
-.hero-node--three { width: 72px; height: 54px; left: 65px; bottom: 56px; background: #ba8de6; color: #291740; }
-.hero-node--four { width: 84px; height: 58px; right: 55px; bottom: 50px; background: #ff795e; color: #42170f; }
+/* 首页那张示意星图。原来五个节点是青 / 绿 / 紫 / 黄 / 珊瑚——一道彩虹，
+   既和这套暖色底子打架，也和真正的星图（掌握度坡道）对不上号。
+   现在直接借用 KnowledgeGraph 里那条坡道：未学的冷紫灰、正在学的珊瑚、
+   已掌握的琥珀。首页看到的，就是进去之后真会看到的。 */
+.hero-node--core  { width: 104px; height: 82px; left: calc(50% - 52px); top: 158px; background: #ff8161; color: #3a1408; }
+.hero-node--one   { width: 78px;  height: 58px; left: 45px;  top: 62px;    background: #ffd966; color: #3a2c05; }
+.hero-node--two   { width: 82px;  height: 60px; right: 42px; top: 58px;    background: #fa9d4c; color: #3a2205; }
+.hero-node--three { width: 72px;  height: 54px; left: 65px;  bottom: 56px; background: #ca625e; color: #2a1210; }
+.hero-node--four  { width: 84px;  height: 58px; right: 55px; bottom: 50px; background: #686085; color: #f6efe0; }
 .hero-edge { position: absolute; z-index: 1; height: 2px; border-radius: 2px; background: linear-gradient(90deg, hsl(var(--foreground) / .05), hsl(var(--foreground) / .38), hsl(var(--foreground) / .05)); transform-origin: left; }
 .edge-one { width: 190px; left: 104px; top: 106px; transform: rotate(28deg); }
 .edge-two { width: 180px; left: 54%; top: 185px; transform: rotate(-28deg); }
@@ -361,9 +392,17 @@ button:active:not(:disabled) { transform: scale(0.97); }
 
 .graph-workspace { container-type: inline-size; }.knowledge-graph-shell { min-width: 0; }
 .graph-dashboard-layer { top: 64px; left: 16px; right: 16px; container-type: inline-size; }
-.dashboard-shell { width: 100%; min-width: 0; }.dashboard-stats { display: grid; grid-template-columns: repeat(3, minmax(0, 128px)); gap: 8px; }.dashboard-stat { width: auto; min-width: 0; color: hsl(var(--foreground)); }.dashboard-stat__content { min-width: 0; }
-@container (max-width: 460px) { .dashboard-stats { grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 4px; }.dashboard-stat__content { padding: 7px 4px; }.dashboard-stat__content > div:first-child { font-size: 8px; white-space: nowrap; }.dashboard-stat__content > div:last-child { font-size: 14px; } }
-@container (max-width: 260px) { .dashboard-stats { grid-template-columns: 1fr; width: 90px; }.dashboard-stat__content { flex-direction: row; justify-content: space-between; gap: 6px; }.dashboard-stat__content > div:first-child { margin: 0; } }
+/* 星图左上角那条数据横幅。刻意做窄：它是背景信息，不该跟节点抢地方。 */
+.dashboard-shell { min-width: 0; }
+.dashboard-bar { display: inline-flex; align-items: center; gap: 12px; padding: 5px 8px 5px 13px; border-radius: var(--glass-radius-pill); color: hsl(var(--foreground)); white-space: nowrap; }
+.dashboard-bar__item { display: inline-flex; align-items: baseline; gap: 6px; }
+.dashboard-bar__item em { color: hsl(var(--muted-foreground)); font-size: 11px; font-style: normal; letter-spacing: .01em; }
+.dashboard-bar__item b { font-size: 14px; font-weight: 700; font-variant-numeric: tabular-nums; }
+.dashboard-bar__value--done { color: hsl(var(--accent)); }
+.dashboard-bar__sep { width: 1px; height: 13px; background: hsl(var(--foreground) / .16); }
+.dashboard-bar__toggle { display: grid; place-items: center; width: 22px; height: 22px; padding: 0; border: 0; border-radius: 50%; background: transparent; color: hsl(var(--muted-foreground)); cursor: pointer; transition: color var(--glass-duration) var(--glass-ease-out), background var(--glass-duration) var(--glass-ease-out); }
+.dashboard-bar__toggle:hover { background: hsl(var(--foreground) / .1); color: hsl(var(--foreground)); }
+@container (max-width: 460px) { .dashboard-bar { gap: 8px; padding-left: 10px; }.dashboard-bar__item em { font-size: 10px; }.dashboard-bar__item b { font-size: 12px; } }
 .graph-toolbar { max-width: calc(100% - 32px); }
 @container (max-width: 520px) { .graph-toolbar { gap: 4px !important; }.graph-toolbar button { padding: 5px 7px !important; font-size: 10px !important; }.graph-dashboard-layer { top: 92px; } }
 @container (max-width: 300px) { .graph-toolbar button { padding: 4px !important; font-size: 9px !important; }.graph-dashboard-layer { top: 142px; } }
@@ -374,31 +413,47 @@ button:active:not(:disabled) { transform: scale(0.97); }
 .dark input::placeholder, .dark textarea::placeholder { color: #a99db8; opacity: 1; }
 /* NOTE: 这几条原来用 !important 硬钉住像素风的配色。现在统一交给玻璃材质，
    浮层元件在两套主题下都由 --glass-* 变量决定，不再需要按主题各写一遍。 */
-.dashboard-stat {
-  border: 0 !important;
-  border-radius: var(--glass-radius-md) !important;
-  background: rgb(var(--glass-tint) / var(--glass-tint-alpha-regular)) !important;
-  -webkit-backdrop-filter: blur(var(--glass-blur-regular)) saturate(var(--glass-saturate));
-  backdrop-filter: blur(var(--glass-blur-regular)) saturate(var(--glass-saturate));
-  box-shadow: inset 0 1px 0 var(--glass-specular-top), inset 0 0 0 1px var(--glass-edge), var(--glass-shadow-ambient) !important;
-  color: hsl(var(--foreground)) !important;
-}
-.dashboard-shell > div > button,
+.graph-toolbar button,
 .graph-toolbar button {
   border: 0 !important;
   border-radius: var(--glass-radius-sm) !important;
   background: rgb(var(--glass-tint) / var(--glass-tint-alpha-thin)) !important;
   -webkit-backdrop-filter: blur(var(--glass-blur-thin)) saturate(var(--glass-saturate));
   backdrop-filter: blur(var(--glass-blur-thin)) saturate(var(--glass-saturate));
-  box-shadow: inset 0 1px 0 var(--glass-specular-top), inset 0 0 0 1px var(--glass-edge), var(--glass-shadow-ambient) !important;
+  box-shadow: inset 0 1px 0 var(--glass-rim-light), inset 0 0 0 1px var(--glass-edge), var(--glass-shadow-ambient) !important;
   color: hsl(var(--foreground)) !important;
   transition: transform var(--glass-duration) var(--glass-ease-spring), box-shadow var(--glass-duration) var(--glass-ease-out) !important;
 }
-.dashboard-shell > div > button:hover,
-.graph-toolbar button:hover { transform: translateY(-2px); box-shadow: inset 0 1px 0 var(--glass-specular-top), inset 0 0 0 1px var(--glass-edge), var(--glass-shadow-raised) !important; }
+.graph-toolbar button:hover { transform: translateY(-2px); box-shadow: inset 0 1px 0 var(--glass-rim-light), inset 0 0 0 1px var(--glass-edge), var(--glass-shadow-raised) !important; }
+/* 工具条的选中态。原来写在 inline style 里，被上面的 !important 覆盖掉，
+   结果 2D / 3D 两个按钮长得一模一样，根本看不出当前在哪个模式。 */
+.graph-toolbar button[data-active="true"] {
+  background: hsl(var(--primary) / .85) !important;
+  color: hsl(var(--primary-foreground)) !important;
+  box-shadow: inset 0 1px 0 rgba(255,255,255,.4), inset 0 0 0 1px hsl(var(--primary) / .5), var(--glass-shadow-raised) !important;
+}
+.graph-toolbar button[data-active="true"]:hover { background: hsl(var(--primary) / .95) !important; }
 
-.course-citation { overflow: hidden; border: 0; border-radius: var(--glass-radius-md); background: hsl(var(--accent) / .12); box-shadow: inset 0 1px 0 var(--glass-specular-top), inset 0 0 0 1px hsl(var(--accent) / .35), 0 8px 22px -10px rgba(0,0,0,.5); color: hsl(var(--foreground)); transition: box-shadow var(--glass-duration) var(--glass-ease-out); }
-.course-citation:hover { box-shadow: inset 0 1px 0 var(--glass-specular-top), inset 0 0 0 1px hsl(var(--accent) / .55), 0 14px 30px -12px rgba(0,0,0,.6); }
+/* 星图里的节点详情 / 连线详情浮层。原本是两张写死的白卡片，暗色主题下要么
+   刺眼要么和深色文字糊成一片；现在交给玻璃材质，两套主题自动成立。 */
+.graph-info-panel {
+  border-radius: var(--glass-radius-lg);
+  color: hsl(var(--foreground));
+}
+.graph-info-panel button { color: hsl(var(--muted-foreground)); transition: color var(--glass-duration) var(--glass-ease-out); }
+.graph-info-panel button:hover { color: hsl(var(--foreground)); }
+
+/* 分段控件（生成星图对话框里的 主题 / 项目 / 文档）。
+   原来三个 tab 各自一种颜色（蓝 / 翠绿 / 紫），选中态还是一块纯白 —— 在暗色
+   主题下白得刺眼，三种色系也互不相干。改成一条玻璃底槽 + 主色选中态。 */
+.segmented { display: flex; gap: 4px; padding: 4px; border-radius: var(--glass-radius-md); }
+.segmented__item { flex: 1; display: inline-flex; align-items: center; justify-content: center; gap: 7px; padding: 8px 14px; border: 0; border-radius: var(--glass-radius-sm); background: transparent; color: hsl(var(--muted-foreground)); font-size: 13px; font-weight: 600; cursor: pointer; transition: color var(--glass-duration) var(--glass-ease-out), background var(--glass-duration) var(--glass-ease-out); }
+.segmented__item:hover { color: hsl(var(--foreground)); background: hsl(var(--foreground) / .07); }
+.segmented__item[data-active="true"] { background: hsl(var(--primary) / .85); color: hsl(var(--primary-foreground)); box-shadow: inset 0 1px 0 rgba(255,255,255,.4), var(--glass-shadow-ambient); }
+.segmented__item:disabled { opacity: .45; cursor: default; }
+
+.course-citation { overflow: hidden; border: 0; border-radius: var(--glass-radius-md); background: hsl(var(--accent) / .12); box-shadow: inset 0 1px 0 var(--glass-rim-light), inset 0 0 0 1px hsl(var(--accent) / .35), 0 8px 22px -10px rgba(0,0,0,.5); color: hsl(var(--foreground)); transition: box-shadow var(--glass-duration) var(--glass-ease-out); }
+.course-citation:hover { box-shadow: inset 0 1px 0 var(--glass-rim-light), inset 0 0 0 1px hsl(var(--accent) / .55), 0 14px 30px -12px rgba(0,0,0,.6); }
 .course-citation__header { width: 100%; display: flex; align-items: center; gap: 9px; padding: 9px; border: 0; background: transparent; color: inherit; box-shadow: none; cursor: pointer; }
 .course-citation__icon { width: 28px; height: 28px; display: grid; place-items: center; border-radius: var(--glass-radius-sm); background: linear-gradient(150deg, hsl(var(--primary)), hsl(var(--primary) / .72)); color: hsl(var(--primary-foreground)); box-shadow: inset 0 1px 0 rgba(255,255,255,.4); }
 .course-citation__eyebrow, .course-citation__title, .course-citation__section { display: block; }
@@ -428,9 +483,13 @@ button:active:not(:disabled) { transform: scale(0.97); }
    Radix 用 data-state 控制挂载/卸载，交给 CSS keyframes 最稳；
    曲线与 Motion 那套弹簧同源，两边观感一致。
    ========================================================================== */
+/* NOTE: 只动 opacity。这里曾经写着 `backdrop-filter: blur(12px)` —— 配合
+   fill-mode: both，那一帧会永久生效，把元素上的 backdrop-blur 工具类整个顶掉，
+   于是遮罩的模糊永远停在 12px，改类名毫无反应。
+   凡是关键帧里硬编码本该由类决定的值，都会变成这种"改了没用"的怪事。 */
 @keyframes glass-overlay-in {
-  from { opacity: 0; backdrop-filter: blur(0px); }
-  to   { opacity: 1; backdrop-filter: blur(12px); }
+  from { opacity: 0; }
+  to   { opacity: 1; }
 }
 
 @keyframes glass-overlay-out {

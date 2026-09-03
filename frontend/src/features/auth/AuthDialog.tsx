@@ -76,8 +76,8 @@ export function AuthDialog({ open, onOpenChange, initialMode = 'login' }: AuthDi
                     <DialogTitle>{mode === 'login' ? '登录' : '注册'}</DialogTitle>
                     <DialogDescription>
                         {mode === 'login'
-                            ? '登录后，你的星图、学习进度与作业只属于你自己。'
-                            : '注册一个账号。老师账号可以建班、布置与批改作业。'}
+                            ? '登录后，数据都记在你自己名下。'
+                            : '选老师身份，就能建班和批改作业。'}
                     </DialogDescription>
                 </DialogHeader>
 
@@ -108,7 +108,7 @@ export function AuthDialog({ open, onOpenChange, initialMode = 'login' }: AuthDi
                             maxLength={128}
                         />
                         {mode === 'register' && (
-                            <p className="text-xs text-muted-foreground">至少 8 个字符。</p>
+                            <p className="text-xs text-muted-foreground">至少 8 位。</p>
                         )}
                     </div>
 
@@ -143,14 +143,14 @@ export function AuthDialog({ open, onOpenChange, initialMode = 'login' }: AuthDi
                     )}
 
                     {error && (
-                        <p className="text-sm text-red-500" role="alert">
+                        <p className="text-sm text-destructive" role="alert">
                             {error}
                         </p>
                     )}
 
                     <Button type="submit" className="w-full" disabled={busy}>
                         {busy && <Loader2 className="mr-2 h-4 w-4 animate-spin" />}
-                        {mode === 'login' ? '登录' : '注册并登录'}
+                        {mode === 'login' ? '登录' : '注册'}
                     </Button>
                 </form>
 
@@ -162,7 +162,7 @@ export function AuthDialog({ open, onOpenChange, initialMode = 'login' }: AuthDi
                         setError('');
                     }}
                 >
-                    {mode === 'login' ? '还没有账号？去注册' : '已有账号？去登录'}
+                    {mode === 'login' ? '没有账号，去注册' : '已经有账号了'}
                 </button>
             </DialogContent>
         </Dialog>

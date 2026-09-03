@@ -38,7 +38,7 @@ export function AccountMenu({
                 ) : (
                     <Users className="mr-1 h-4 w-4" />
                 )}
-                {isTeacher ? '我的班级' : '班级作业'}
+                {isTeacher ? '我的班级' : '我的作业'}
             </Button>
             <span className="max-w-[10rem] truncate text-sm text-muted-foreground" title={user.username}>
                 {user.display_name || user.username}

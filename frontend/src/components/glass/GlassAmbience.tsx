@@ -1,98 +1,23 @@
 /**
- * 背景氛围光。
+ * 背景。
  *
- * 毛玻璃需要背后有东西可透 —— 背景是一块纯色时，再精细的材质也看不出来。
- * 这里放几团缓慢漂移的色光，玻璃面板经过时会把它们晕开、折射，材质才成立。
+ * 这里原本是四团缓慢漂移的彩色光斑。去掉了 —— 那是"AI 生成落地页"最典型的
+ * 签名，而且它其实是在替玻璃作弊：真正的毛玻璃应该透出**页面本身的内容**
+ * （星空、课程卡、星图），而不是几团专门摆在那儿给它折射的装饰色块。
  *
- * 光斑本身不参与交互，也不该抢注意力：动得很慢，透明度很低，
- * 并且在"减少动态效果"下完全静止。
+ * 留下的是一层极淡、静止的光照梯度：只负责给画面定一个光源方向（左上偏亮、
+ * 右下偏暗），让所有玻璃元件的左上高光在物理上说得通。它不动，也不抢注意力。
  */
-import { useMemo } from 'react';
-import { motion, useReducedMotion } from 'motion/react';
-
-interface Orb {
-    color: string;
-    size: number;
-    top: string;
-    left: string;
-    duration: number;
-    delay: number;
-    drift: [number, number];
-}
-
-const ORBS: Orb[] = [
-    {
-        color: 'hsl(var(--primary))',
-        size: 520,
-        top: '-12%',
-        left: '-8%',
-        duration: 34,
-        delay: 0,
-        drift: [90, 60],
-    },
-    {
-        color: 'hsl(var(--accent))',
-        size: 440,
-        top: '48%',
-        left: '62%',
-        duration: 42,
-        delay: 2,
-        drift: [-70, -50],
-    },
-    {
-        color: 'hsl(var(--ring))',
-        size: 380,
-        top: '68%',
-        left: '6%',
-        duration: 38,
-        delay: 4,
-        drift: [60, -70],
-    },
-    {
-        color: 'hsl(var(--secondary))',
-        size: 460,
-        top: '4%',
-        left: '58%',
-        duration: 46,
-        delay: 1,
-        drift: [-80, 70],
-    },
-];
+import { useReducedMotion } from 'motion/react';
 
 export function GlassAmbience() {
-    const reduceMotion = useReducedMotion();
-    const orbs = useMemo(() => ORBS, []);
+    // 保留这个 hook 是为了将来若加入动效时行为一致；当前这层本就是静止的。
+    useReducedMotion();
 
     return (
         <div className="glass-ambience" aria-hidden="true">
-            {orbs.map((orb, index) => (
-                <motion.span
-                    key={index}
-                    className="glass-ambience__orb"
-                    style={{
-                        width: orb.size,
-                        height: orb.size,
-                        top: orb.top,
-                        left: orb.left,
-                        background: `radial-gradient(circle at 35% 30%, ${orb.color}, transparent 68%)`,
-                    }}
-                    animate={
-                        reduceMotion
-                            ? undefined
-                            : {
-                                  x: [0, orb.drift[0], 0],
-                                  y: [0, orb.drift[1], 0],
-                                  scale: [1, 1.12, 1],
-                              }
-                    }
-                    transition={{
-                        duration: orb.duration,
-                        delay: orb.delay,
-                        repeat: Infinity,
-                        ease: 'easeInOut',
-                    }}
-                />
-            ))}
+            <span className="glass-ambience__key" />
+            <span className="glass-ambience__fill" />
         </div>
     );
 }

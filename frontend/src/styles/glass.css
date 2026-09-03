@@ -22,29 +22,41 @@
    ========================================================================== */
 
 :root {
-  /* 玻璃本体的底色：暗色主题下是"加一点白"，亮色主题下是"加一点白但更实" */
+  /* 玻璃本体的底色。
+     这里的关键是**透明度优先于模糊度**：一块真玻璃你能看清背后东西的形状，
+     只是被推远、被晕开。反过来（重模糊 + 重染色）出来的是磨砂塑料。
+     所以染色压到很低，模糊只用中等档，靠提饱和让背后的颜色"透"上来。 */
   --glass-tint: 255 255 255;
-  --glass-tint-alpha-thin: 0.06;
-  --glass-tint-alpha-regular: 0.09;
-  --glass-tint-alpha-thick: 0.14;
+  --glass-tint-alpha-thin: 0.035;
+  --glass-tint-alpha-regular: 0.05;
+  --glass-tint-alpha-thick: 0.075;
 
-  --glass-blur-thin: 12px;
-  --glass-blur-regular: 24px;
-  --glass-blur-thick: 40px;
+  --glass-blur-thin: 10px;
+  --glass-blur-regular: 16px;
+  --glass-blur-thick: 26px;
 
-  --glass-saturate: 180%;
-  --glass-brightness: 1.06;
+  /* 提饱和 + 微提对比：让背后的形状保持可辨认，而不是糊成一团灰 */
+  --glass-saturate: 200%;
+  --glass-brightness: 1.04;
+  --glass-contrast: 1.06;
 
-  /* 高光：顶部亮边与底部暗边 */
-  --glass-specular-top: rgba(255, 255, 255, 0.45);
-  --glass-specular-bottom: rgba(255, 255, 255, 0.06);
-  --glass-edge: rgba(255, 255, 255, 0.18);
+  /* 边缘是有方向的：光从左上来，所以左上一道亮边、右下一道极淡的暗边。
+     均匀一整圈内发光是假玻璃最容易露馅的地方。 */
+  --glass-rim-light: rgba(255, 255, 255, 0.5);
+  --glass-rim-dark: rgba(0, 0, 0, 0.22);
+  --glass-hairline: rgba(255, 255, 255, 0.1);
+  --glass-edge: rgba(255, 255, 255, 0.1);
 
-  /* 环境光投影 */
-  --glass-shadow-ambient: 0 1px 2px rgba(0, 0, 0, 0.16),
-    0 8px 24px -8px rgba(0, 0, 0, 0.4), 0 24px 64px -24px rgba(0, 0, 0, 0.55);
-  --glass-shadow-raised: 0 2px 4px rgba(0, 0, 0, 0.2),
-    0 16px 40px -12px rgba(0, 0, 0, 0.5), 0 40px 96px -32px rgba(0, 0, 0, 0.65);
+  /* 投影收紧：一道贴着元件的接触阴影 + 一道很淡的远投影。
+     大范围柔光会让每个元件都像在发光，反而没有轻重。 */
+  --glass-shadow-ambient: 0 0.5px 1px rgba(0, 0, 0, 0.28),
+    0 4px 12px -4px rgba(0, 0, 0, 0.3);
+  --glass-shadow-raised: 0 1px 2px rgba(0, 0, 0, 0.32),
+    0 10px 28px -8px rgba(0, 0, 0, 0.42);
+
+  /* 模态遮罩。暗色下压黑没问题，亮色下再压黑就会把整张奶油底的页面
+     拖成灰的——所以亮色主题换成一层偏暖的浅色罩。 */
+  --glass-scrim: 0 0% 0% / 0.55;
 
   /* 圆角。iOS 用的是连续曲率，越大的面板圆角越大 */
   --glass-radius-sm: 12px;
@@ -63,18 +75,23 @@
 
 /* 护眼亮色主题下，玻璃要更"实"一点才压得住浅色背景 */
 .eye-care {
-  --glass-tint-alpha-thin: 0.5;
-  --glass-tint-alpha-regular: 0.6;
-  --glass-tint-alpha-thick: 0.72;
-  --glass-saturate: 160%;
+  /* 亮色底上要保证文字可读，染色比暗色高一些，但远没到"半张白纸"的程度。
+     0.7 那种值等于把玻璃糊死，背后什么都看不见。 */
+  --glass-tint-alpha-thin: 0.28;
+  --glass-tint-alpha-regular: 0.38;
+  --glass-tint-alpha-thick: 0.5;
+  --glass-saturate: 190%;
   --glass-brightness: 1.02;
-  --glass-specular-top: rgba(255, 255, 255, 0.9);
-  --glass-specular-bottom: rgba(255, 255, 255, 0.35);
-  --glass-edge: rgba(120, 100, 80, 0.16);
-  --glass-shadow-ambient: 0 1px 2px rgba(90, 70, 50, 0.08),
-    0 8px 24px -8px rgba(90, 70, 50, 0.16), 0 24px 64px -24px rgba(90, 70, 50, 0.2);
-  --glass-shadow-raised: 0 2px 4px rgba(90, 70, 50, 0.1),
-    0 16px 40px -12px rgba(90, 70, 50, 0.2), 0 40px 96px -32px rgba(90, 70, 50, 0.28);
+  --glass-contrast: 1.02;
+  --glass-rim-light: rgba(255, 255, 255, 0.95);
+  --glass-rim-dark: rgba(120, 96, 70, 0.16);
+  --glass-hairline: rgba(120, 96, 70, 0.1);
+  --glass-edge: rgba(120, 96, 70, 0.1);
+  --glass-scrim: 28 30% 26% / 0.3;
+  --glass-shadow-ambient: 0 0.5px 1px rgba(90, 70, 50, 0.1),
+    0 4px 12px -4px rgba(90, 70, 50, 0.14);
+  --glass-shadow-raised: 0 1px 2px rgba(90, 70, 50, 0.12),
+    0 10px 28px -8px rgba(90, 70, 50, 0.2);
 }
 
 /* --------------------------------------------------------------------------
@@ -101,13 +118,15 @@
     rgb(var(--glass-tint) / calc(var(--glass-alpha) * 0.72)) 100%
   );
   -webkit-backdrop-filter: blur(var(--glass-blur)) saturate(var(--glass-saturate))
-    brightness(var(--glass-brightness));
+    brightness(var(--glass-brightness)) contrast(var(--glass-contrast));
   backdrop-filter: blur(var(--glass-blur)) saturate(var(--glass-saturate))
-    brightness(var(--glass-brightness));
+    brightness(var(--glass-brightness)) contrast(var(--glass-contrast));
+  /* 带偏移的 inset 阴影只画一条边，不是一整圈 —— 左上亮、右下暗，
+     这样光源方向是明确的，而不是"每个元件自己在发光"。 */
   box-shadow:
-    inset 0 1px 0 0 var(--glass-specular-top),
-    inset 0 -1px 0 0 var(--glass-specular-bottom),
-    inset 0 0 0 1px var(--glass-edge),
+    inset 1.5px 1.5px 0 -1px var(--glass-rim-light),
+    inset -1.5px -1.5px 0 -1px var(--glass-rim-dark),
+    inset 0 0 0 0.5px var(--glass-hairline),
     var(--glass-shadow-ambient);
   transition:
     box-shadow var(--glass-duration) var(--glass-ease-out),
@@ -131,9 +150,9 @@
   --glass-blur: var(--glass-blur-thick);
   border-radius: var(--glass-radius-lg);
   box-shadow:
-    inset 0 1px 0 0 var(--glass-specular-top),
-    inset 0 -1px 0 0 var(--glass-specular-bottom),
-    inset 0 0 0 1px var(--glass-edge),
+    inset 1.5px 1.5px 0 -1px var(--glass-rim-light),
+    inset -1.5px -1.5px 0 -1px var(--glass-rim-dark),
+    inset 0 0 0 0.5px var(--glass-hairline),
     var(--glass-shadow-raised);
 }
 
@@ -174,10 +193,10 @@
   z-index: 1;
   border-radius: inherit;
   background: radial-gradient(
-    240px circle at var(--glass-pointer-x, 50%) var(--glass-pointer-y, 0%),
-    rgba(255, 255, 255, 0.22),
-    rgba(255, 255, 255, 0.06) 38%,
-    transparent 72%
+    150px circle at var(--glass-pointer-x, 50%) var(--glass-pointer-y, 0%),
+    rgba(255, 255, 255, 0.13),
+    rgba(255, 255, 255, 0.03) 42%,
+    transparent 70%
   );
   opacity: 0;
   transition: opacity var(--glass-duration) var(--glass-ease-out);
@@ -215,9 +234,9 @@
 .glass--interactive:hover {
   transform: translateY(-2px);
   box-shadow:
-    inset 0 1px 0 0 var(--glass-specular-top),
-    inset 0 -1px 0 0 var(--glass-specular-bottom),
-    inset 0 0 0 1px var(--glass-edge),
+    inset 1.5px 1.5px 0 -1px var(--glass-rim-light),
+    inset -1.5px -1.5px 0 -1px var(--glass-rim-dark),
+    inset 0 0 0 0.5px var(--glass-hairline),
     var(--glass-shadow-raised);
 }
 
@@ -229,9 +248,9 @@
 .glass--interactive:focus-visible {
   outline: none;
   box-shadow:
-    inset 0 1px 0 0 var(--glass-specular-top),
-    inset 0 0 0 1px var(--glass-edge),
-    0 0 0 3px hsl(var(--ring) / 0.55),
+    inset 1.5px 1.5px 0 -1px var(--glass-rim-light),
+    inset 0 0 0 0.5px var(--glass-hairline),
+    0 0 0 3px hsl(var(--ring) / 0.5),
     var(--glass-shadow-raised);
 }
 
@@ -289,7 +308,7 @@
   background: rgb(0 0 0 / 0.18);
   box-shadow:
     inset 0 1px 2px rgba(0, 0, 0, 0.35),
-    inset 0 -1px 0 var(--glass-specular-bottom);
+    inset 0 -1px 0 var(--glass-rim-dark);
 }
 
 .eye-care .glass-inset {
@@ -310,17 +329,34 @@
   pointer-events: none;
 }
 
-.glass-ambience__orb {
+/* 主光：定义光源在左上，所有玻璃元件的左上高光因此说得通 */
+.glass-ambience__key {
   position: absolute;
-  border-radius: 50%;
-  filter: blur(80px);
-  opacity: 0.55;
-  will-change: transform;
+  inset: -20% 40% 40% -20%;
+  background: radial-gradient(
+    circle at 30% 30%,
+    hsl(var(--foreground) / 0.05),
+    transparent 62%
+  );
 }
 
-.eye-care .glass-ambience__orb {
-  opacity: 0.32;
-  filter: blur(90px);
+/* 补光：右下压暗一点，画面才有纵深，而不是平铺的一块底色 */
+.glass-ambience__fill {
+  position: absolute;
+  inset: 30% -20% -20% 40%;
+  background: radial-gradient(circle at 70% 70%, rgba(0, 0, 0, 0.16), transparent 64%);
+}
+
+.eye-care .glass-ambience__key {
+  background: radial-gradient(
+    circle at 30% 30%,
+    rgba(255, 255, 255, 0.5),
+    transparent 62%
+  );
+}
+
+.eye-care .glass-ambience__fill {
+  background: radial-gradient(circle at 70% 70%, rgba(120, 96, 70, 0.07), transparent 64%);
 }
 
 /* --------------------------------------------------------------------------
@@ -338,9 +374,6 @@
     transform: none;
   }
 
-  .glass-ambience__orb {
-    animation: none !important;
-  }
 }
 
 /* 极端情况下（浏览器完全不支持 backdrop-filter）退化成不透明面板，

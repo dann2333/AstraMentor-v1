@@ -27,75 +27,128 @@ interface KnowledgeGraphProps {
 }
 
 /**
- * 将掌握度权重映射到精致的渐变色系
- * 使用蓝→青→绿渐变表示从未学到已掌握的进度
+ * 掌握度配色。
+ *
+ * 这里刻意不用现成的 tailwind 靛蓝/翠绿色阶 —— 那套颜色和产品其余部分
+ * （珊瑚色主色、琥珀色强调色、深紫底）没有任何关系，星图一打开就像换了个
+ * 软件。改成沿着自家色相走一条暖色坡道：
+ *
+ *   没学过（冷紫灰，混在底色里不抢眼）→ 起步（暗玫瑰）→ 学着（珊瑚 = 主色）
+ *   → 熟练（橙）→ 掌握（琥珀 = 强调色）
+ *
+ * 色相 12 → 45 单向推进，配上亮度递增，扫一眼就知道哪几个节点还没动过；
+ * 亮色主题同一条坡道压低亮度，好在米色底上站得住。
+ *
+ * 用十六进制而不是 CSS 变量，是因为这些值同时要喂给 3D 渲染器（three.js），
+ * 它只认得能直接解析的颜色字符串。
  */
-const getMasteryColor = (weightA: number, theme?: string): { fill: string; stroke: string; shadowColor: string } => {
-  // Make light/eye-care theme use the colorful mastery indicators but force thick black strokes/shadows.
-  if (theme === 'light' || theme === 'eye-care') {
-    if (weightA >= 0.8) return { fill: '#059669', stroke: '#000000', shadowColor: '#000000' };
-    if (weightA >= 0.6) return { fill: '#10b981', stroke: '#000000', shadowColor: '#000000' };
-    if (weightA >= 0.4) return { fill: '#14b8a6', stroke: '#000000', shadowColor: '#000000' };
-    if (weightA >= 0.2) return { fill: '#3b82f6', stroke: '#000000', shadowColor: '#000000' };
-    return { fill: '#6366f1', stroke: '#000000', shadowColor: '#000000' };
-  }
+type MasteryTone = { fill: string; stroke: string; shadowColor: string; label: string };
 
-  if (weightA >= 0.8) return { fill: '#059669', stroke: '#047857', shadowColor: 'rgba(5,150,105,0.4)' };
-  if (weightA >= 0.6) return { fill: '#10b981', stroke: '#059669', shadowColor: 'rgba(16,185,129,0.35)' };
-  if (weightA >= 0.4) return { fill: '#14b8a6', stroke: '#0d9488', shadowColor: 'rgba(20,184,166,0.3)' };
-  if (weightA >= 0.2) return { fill: '#3b82f6', stroke: '#2563eb', shadowColor: 'rgba(59,130,246,0.3)' };
-  // 未开始学习：优雅的靛蓝色
-  return { fill: '#6366f1', stroke: '#4f46e5', shadowColor: 'rgba(99,102,241,0.3)' };
+const MASTERY_RAMP_DARK: MasteryTone[] = [
+  { fill: '#686085', stroke: '#4c4763', shadowColor: 'rgba(104,96,133,0.30)', label: '#f6efe0' },
+  { fill: '#ca625e', stroke: '#a44b48', shadowColor: 'rgba(202,98,94,0.30)', label: '#2a1210' },
+  { fill: '#ff8161', stroke: '#d15f43', shadowColor: 'rgba(255,129,97,0.34)', label: '#3a1408' },
+  { fill: '#fa9d4c', stroke: '#cd7a30', shadowColor: 'rgba(250,157,76,0.34)', label: '#3a2205' },
+  { fill: '#ffd966', stroke: '#d4ac3c', shadowColor: 'rgba(255,217,102,0.38)', label: '#3a2c05' },
+];
+
+const MASTERY_RAMP_LIGHT: MasteryTone[] = [
+  { fill: '#5f5878', stroke: '#494360', shadowColor: 'rgba(95,88,120,0.26)', label: '#ffffff' },
+  { fill: '#c44945', stroke: '#9b3733', shadowColor: 'rgba(196,73,69,0.26)', label: '#ffffff' },
+  { fill: '#d45735', stroke: '#ab4226', shadowColor: 'rgba(212,87,53,0.28)', label: '#2e0f06' },
+  { fill: '#ca7021', stroke: '#a15716', shadowColor: 'rgba(202,112,33,0.28)', label: '#2e1a04' },
+  { fill: '#c3911d', stroke: '#9a7112', shadowColor: 'rgba(195,145,29,0.30)', label: '#2e2204' },
+];
+
+/** 0 → 1 的权重落到 5 档坡道上。 */
+const rampIndex = (weight: number): number => {
+  if (weight >= 0.8) return 4;
+  if (weight >= 0.6) return 3;
+  if (weight >= 0.4) return 2;
+  if (weight >= 0.2) return 1;
+  return 0;
 };
 
+const isLightTheme = (theme?: string) => theme === 'eye-care' || theme === 'light';
+
+const getMasteryColor = (weightA: number, theme?: string): MasteryTone =>
+  (isLightTheme(theme) ? MASTERY_RAMP_LIGHT : MASTERY_RAMP_DARK)[rampIndex(weightA)];
+
 /**
- * 根据边的权重返回视觉参数
+ * 连线的颜色与粗细。
+ *
+ * 连线只表达"关系有多强"，不该和节点抢颜色，所以统一用前景色调不同透明度：
+ * 弱关系淡到几乎看不见，强关系才实起来。
  */
+const EDGE_RAMP_DARK = ['rgba(250,240,214,0.14)', 'rgba(250,240,214,0.22)', 'rgba(250,240,214,0.32)', 'rgba(250,240,214,0.44)', 'rgba(250,240,214,0.58)'];
+const EDGE_RAMP_LIGHT = ['rgba(62,50,40,0.16)', 'rgba(62,50,40,0.26)', 'rgba(62,50,40,0.36)', 'rgba(62,50,40,0.48)', 'rgba(62,50,40,0.62)'];
+const EDGE_WIDTHS = [1.2, 2, 3, 4, 5];
+
 const getEdgeStyle = (weight: number, theme?: string) => {
-  if (theme === 'light' || theme === 'eye-care') {
-    if (weight >= 0.8) return { stroke: '#000000', lineWidth: 6 };
-    if (weight >= 0.6) return { stroke: '#333333', lineWidth: 4.5 };
-    if (weight >= 0.4) return { stroke: '#666666', lineWidth: 3 };
-    if (weight >= 0.2) return { stroke: '#999999', lineWidth: 2 };
-    return { stroke: '#cccccc', lineWidth: 1.2 };
-  }
-  // NOTE: 用靖蓝→紫色色调体现关联强度
-  if (weight >= 0.8) return { stroke: '#6366f1', lineWidth: 5 };
-  if (weight >= 0.6) return { stroke: '#818cf8', lineWidth: 4 };
-  if (weight >= 0.4) return { stroke: '#a5b4fc', lineWidth: 3 };
-  if (weight >= 0.2) return { stroke: '#c7d2fe', lineWidth: 2 };
-  return { stroke: '#ddd6fe', lineWidth: 1.2 };
+  const i = rampIndex(weight);
+  return {
+    stroke: (isLightTheme(theme) ? EDGE_RAMP_LIGHT : EDGE_RAMP_DARK)[i],
+    lineWidth: EDGE_WIDTHS[i],
+  };
 };
 
+/** 强调色，用于悬停与高亮，同样取自主题色板。 */
+const ACCENT_WARM = '#ffd966';   // 琥珀：父节点 / 高亮
+const ACCENT_CORAL = '#ff8161';  // 珊瑚：子节点
+const DIM_DARK = '#3a3550';
+const DIM_LIGHT = '#cfc6bb';
+
 /**
- * 根据主题获取配色方案
+ * 画布与默认节点配色。画布本身保持透明，让底下的玻璃面板和粒子透出来 ——
+ * 星图铺一块不透明底色会把整页的材质切断。
  */
 const getThemeColors = (theme?: string) => {
-  if (theme === 'eye-care' || theme === 'light') {
+  if (isLightTheme(theme)) {
     return {
-      canvasBg: theme === 'eye-care' ? '#faf7f2' : '#ffffff',
-      defaultFill: '#ffffff',
-      defaultStroke: '#000000',
-      edgeColor: '#000000',
-      shadowColor: '#000000',
-    };
-  }
-  if (theme === 'dark') {
-    return {
-      canvasBg: '#0f172a',
-      defaultFill: '#6366f1',
-      defaultStroke: '#4f46e5',
-      edgeColor: 'rgba(99, 102, 241, 0.25)',
-      shadowColor: 'rgba(99,102,241,0.3)',
+      canvasBg: 'transparent',
+      defaultFill: MASTERY_RAMP_LIGHT[0].fill,
+      defaultStroke: MASTERY_RAMP_LIGHT[0].stroke,
+      defaultLabelFill: MASTERY_RAMP_LIGHT[0].label,
+      edgeColor: EDGE_RAMP_LIGHT[1],
+      shadowColor: MASTERY_RAMP_LIGHT[0].shadowColor,
     };
   }
   return {
-    canvasBg: '#ffffff',
-    defaultFill: '#ffffff',
-    defaultStroke: '#000000',
-    edgeColor: '#000000',
-    shadowColor: '#000000',
+    canvasBg: 'transparent',
+    defaultFill: MASTERY_RAMP_DARK[0].fill,
+    defaultStroke: MASTERY_RAMP_DARK[0].stroke,
+    defaultLabelFill: MASTERY_RAMP_DARK[0].label,
+    edgeColor: EDGE_RAMP_DARK[1],
+    shadowColor: MASTERY_RAMP_DARK[0].shadowColor,
   };
+};
+
+/**
+ * fitView 之后把缩放拉回可读区间。
+ *
+ * 节点标签是 16px，一旦整图被缩到 0.5 倍以下，字就只剩一团色块 —— 这正是
+ * "星图看不清"的直接原因。宁可让长链条溢出视口、让人拖两下，也不要一屏塞满
+ * 谁也认不出的节点。工具条上的"定位"随时能把视图拉回来。
+ */
+const MIN_READABLE_ZOOM = 0.7;
+
+const fitViewReadable = (graph: Graph) => {
+  try {
+    const result = graph.fitView() as unknown as Promise<void> | void;
+    const settle = () => {
+      try {
+        if (graph.getZoom() < MIN_READABLE_ZOOM) {
+          graph.zoomTo(MIN_READABLE_ZOOM);
+          graph.fitCenter();
+        }
+      } catch { /* 图已销毁 */ }
+    };
+    if (result && typeof (result as Promise<void>).then === 'function') {
+      (result as Promise<void>).then(settle).catch(() => { /* 图已销毁 */ });
+    } else {
+      settle();
+    }
+  } catch { /* 图已销毁 */ }
 };
 
 /**
@@ -234,6 +287,7 @@ const KnowledgeGraph: React.FC<KnowledgeGraphProps> = ({ data, onNodeClick, onNo
             _fill: mastery.fill,
             _stroke: mastery.stroke,
             _shadowColor: mastery.shadowColor,
+            _labelFill: mastery.label,
             _weightA: weightA,
             _attrs: n.attributes || {},
           },
@@ -265,9 +319,11 @@ const KnowledgeGraph: React.FC<KnowledgeGraphProps> = ({ data, onNodeClick, onNo
   const getLayoutConfig = useCallback((type: 'TB' | 'LR') => ({
     type: 'antv-dagre' as const,
     rankdir: type,
-    nodeSize: [200, 50] as [number, number],
-    nodesep: type === 'TB' ? 120 : 90,
-    ranksep: type === 'TB' ? 100 : 120,
+    nodeSize: [188, 46] as [number, number],
+    // 间距收窄了一截。原来的 120/100 会把十来个节点的链条拉到视口的两倍高，
+    // fitView 只好把整张图缩到 0.4 倍——节点上的字直接糊掉。
+    nodesep: type === 'TB' ? 48 : 72,
+    ranksep: type === 'TB' ? 64 : 96,
     controlPoints: true,
   }), []);
 
@@ -298,7 +354,7 @@ const KnowledgeGraph: React.FC<KnowledgeGraphProps> = ({ data, onNodeClick, onNo
       existingGraph.render().then(() => {
         if (graphRef.current === existingGraph) {
           if (viewMode === '2d') {
-            existingGraph.fitView();
+            fitViewReadable(existingGraph);
             if (highlightedNodeRef.current) {
               applyHighlight(existingGraph, highlightedNodeRef.current);
             }
@@ -441,7 +497,7 @@ const KnowledgeGraph: React.FC<KnowledgeGraphProps> = ({ data, onNodeClick, onNo
         if (mounted && graphRef.current === graph) {
           // 初始渲染后立即 fitView，确保图谱居中适配视口
           if (viewMode === '2d') {
-            graph.fitView();
+            fitViewReadable(graph);
           }
         }
       }).catch(() => { /* 忽略已销毁图表的错误 */ });
@@ -463,13 +519,13 @@ const KnowledgeGraph: React.FC<KnowledgeGraphProps> = ({ data, onNodeClick, onNo
           type: 'cubic-vertical',
           style: {
             stroke: (d: any) => {
-              if (d.data?._highlighted) return theme === 'light' ? '#000' : '#6366f1';
-              if (d.data?._dimmed) return theme === 'light' ? '#eee' : '#e2e8f0';
+              if (d.data?._highlighted) return ACCENT_WARM;
+              if (d.data?._dimmed) return isLightTheme(theme) ? DIM_LIGHT : DIM_DARK;
               return d.data?._stroke || tc.edgeColor;
             },
             lineWidth: (d: any) => {
-              if (d.data?._highlighted) return theme === 'light' ? 4 : 3;
-              if (d.data?._dimmed) return theme === 'light' ? 1 : 0.8;
+              if (d.data?._highlighted) return 3;
+              if (d.data?._dimmed) return 0.8;
               return d.data?._lineWidth || 1.5;
             },
             opacity: (d: any) => d.data?._dimmed ? 0.2 : 1,
@@ -481,8 +537,8 @@ const KnowledgeGraph: React.FC<KnowledgeGraphProps> = ({ data, onNodeClick, onNo
               return Math.max(12, baseWidth * 3);
             },
             endArrowFill: (d: any) => {
-              if (d.data?._highlighted) return theme === 'light' ? '#000' : '#6366f1';
-              if (d.data?._dimmed) return theme === 'light' ? '#eee' : '#e2e8f0';
+              if (d.data?._highlighted) return ACCENT_WARM;
+              if (d.data?._dimmed) return isLightTheme(theme) ? DIM_LIGHT : DIM_DARK;
               return d.data?._stroke || tc.edgeColor;
             },
             cursor: 'pointer',
@@ -491,20 +547,20 @@ const KnowledgeGraph: React.FC<KnowledgeGraphProps> = ({ data, onNodeClick, onNo
         node: {
           type: 'rect',
           style: {
-            size: [220, 52],
+            size: [200, 48],
             radius: 12,
             labelText: (d: any) => d.data?.label || d.id || '',
             labelPlacement: 'center',
-            labelFontSize: 17,
+            labelFontSize: 16,
             labelFontWeight: 600,
-            labelFill: '#fff',
+            labelFill: (d: any) => d.data?._labelFill || tc.defaultLabelFill,
             labelFontFamily: '-apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif',
             labelWordWrap: true,
-            labelWordWrapWidth: 190,
+            labelWordWrapWidth: 172,
             labelMaxLines: 2,
             fill: (d: any) => d.data?._fill || tc.defaultFill,
             stroke: (d: any) => {
-              if (d.data?._selected) return '#fff';
+              if (d.data?._selected) return isLightTheme(theme) ? '#2e2118' : '#fdf6e3';
               return d.data?._stroke || tc.defaultStroke;
             },
             lineWidth: (d: any) => {
@@ -571,8 +627,8 @@ const KnowledgeGraph: React.FC<KnowledgeGraphProps> = ({ data, onNodeClick, onNo
             materialType: 'phong',
             // NOTE: 3D 节点颜色：强制使用星空主题的高亮发光感
             fill: (d: any) => {
-              if (d.data?._dimmed) return '#334155';
-              return getMasteryColor(d.data?._weightA || 0, 'dark').fill || '#818cf8';
+              if (d.data?._dimmed) return DIM_DARK;
+              return getMasteryColor(d.data?._weightA || 0, 'dark').fill;
             },
             // NOTE: 根据连接数动态调整半径，hub 节点更大更醒目
             radius: (d: any) => {
@@ -586,10 +642,10 @@ const KnowledgeGraph: React.FC<KnowledgeGraphProps> = ({ data, onNodeClick, onNo
           style: {
             // NOTE: 3D 边样式：强制使用星光主题连线
             stroke: (d: any) => {
-              if (d.data?._hoverParent) return '#f59e0b';
-              if (d.data?._hoverChild) return '#06b6d4';
-              if (d.data?._highlighted) return '#a78bfa';
-              return getEdgeStyle(d.data?._weight || 0.1, 'dark').stroke || '#818cf8';
+              if (d.data?._hoverParent) return ACCENT_WARM;
+              if (d.data?._hoverChild) return ACCENT_CORAL;
+              if (d.data?._highlighted) return ACCENT_WARM;
+              return getEdgeStyle(d.data?._weight || 0.1, 'dark').stroke;
             },
             lineWidth: (d: any) => {
               if (d.data?._hoverParent || d.data?._hoverChild) return 2.5;
@@ -675,7 +731,7 @@ const KnowledgeGraph: React.FC<KnowledgeGraphProps> = ({ data, onNodeClick, onNo
           if (viewMode === '2d') {
             clearTimeout(fitViewTimer);
             fitViewTimer = setTimeout(() => {
-              graphRef.current?.fitView();
+              if (graphRef.current) fitViewReadable(graphRef.current);
             }, 200);
           }
         }
@@ -1168,8 +1224,8 @@ const KnowledgeGraph: React.FC<KnowledgeGraphProps> = ({ data, onNodeClick, onNo
           labelEl.style.fontSize = '12px';
           labelEl.style.fontWeight = '600';
           labelEl.style.fontFamily = '"System-ui", "Segoe UI", "Microsoft YaHei", "PingFang SC", sans-serif';
-          labelEl.style.color = '#f8fafc';
-          labelEl.style.textShadow = '0 0 6px rgba(0,0,0,0.9), 0 0 12px rgba(14,165,233,0.5)';
+          labelEl.style.color = '#fdf6e3';
+          labelEl.style.textShadow = '0 1px 3px rgba(0,0,0,0.95), 0 0 10px rgba(0,0,0,0.7)';
           labelEl.style.transform = 'translate(-50%, 0)';
           labelEl.style.transition = 'opacity 0.15s ease';
           labelEl.style.userSelect = 'none';
@@ -1227,7 +1283,7 @@ const KnowledgeGraph: React.FC<KnowledgeGraphProps> = ({ data, onNodeClick, onNo
    */
   const handleFitView = useCallback(() => {
     if (graphRef.current) {
-      graphRef.current.fitView();
+      fitViewReadable(graphRef.current);
     }
   }, []);
 
@@ -1238,7 +1294,7 @@ const KnowledgeGraph: React.FC<KnowledgeGraphProps> = ({ data, onNodeClick, onNo
         width: '100%',
         height: '100%',
         position: 'relative',
-        background: viewMode === '3d' ? '#090a0f' : 'transparent',
+        background: viewMode === '3d' ? '#0d0c16' : 'transparent',
         transition: 'background 0.5s ease',
         overflow: 'hidden'
       }}
@@ -1249,7 +1305,7 @@ const KnowledgeGraph: React.FC<KnowledgeGraphProps> = ({ data, onNodeClick, onNo
         <div style={{
           position: 'absolute',
           top: 0, left: 0, right: 0, bottom: 0,
-          background: 'radial-gradient(ellipse at center, #1b2735 0%, #090a0f 100%)',
+          background: 'radial-gradient(ellipse at center, #1d1834 0%, #0d0c16 100%)',
           zIndex: 0,
           pointerEvents: 'none',
         }}>
@@ -1303,24 +1359,10 @@ const KnowledgeGraph: React.FC<KnowledgeGraphProps> = ({ data, onNodeClick, onNo
                 <button
                   key={type}
                   onClick={(e) => { e.stopPropagation(); handleLayoutChange(type); }}
-                  style={{
-                    padding: '7px 16px',
-                    borderRadius: 10,
-                    border: 'none',
-                    cursor: 'pointer',
-                    fontSize: 12,
-                    fontWeight: 600,
-                    transition: 'all 0.2s ease',
-                    background: layoutType === type
-                      ? 'linear-gradient(135deg, #6366f1, #8b5cf6)'
-                      : 'transparent',
-                    color: layoutType === type ? '#fff' : '#64748b',
-                    boxShadow: layoutType === type
-                      ? '0 2px 8px rgba(99,102,241,0.3)'
-                      : 'none',
-                  }}
+                  data-active={layoutType === type}
+                  style={{ padding: '7px 16px', border: 'none', cursor: 'pointer', fontSize: 12, fontWeight: 600 }}
                 >
-                  {type === 'TB' ? `↓ ${t('graph.layout_vertical')}` : `→ ${t('graph.layout_horizontal')}`}
+                  {type === 'TB' ? t('graph.layout_vertical') : t('graph.layout_horizontal')}
                 </button>
               ))}
 
@@ -1328,27 +1370,9 @@ const KnowledgeGraph: React.FC<KnowledgeGraphProps> = ({ data, onNodeClick, onNo
               <button
                 onClick={(e) => { e.stopPropagation(); handleFitView(); }}
                 title="一键定位：自适应视口"
-                style={{
-                  padding: '7px 14px',
-                  borderRadius: 10,
-                  border: 'none',
-                  cursor: 'pointer',
-                  fontSize: 12,
-                  fontWeight: 600,
-                  transition: 'all 0.2s ease',
-                  background: 'transparent',
-                  color: '#64748b',
-                }}
-                onMouseEnter={(e) => {
-                  (e.target as HTMLButtonElement).style.background = 'rgba(99,102,241,0.1)';
-                  (e.target as HTMLButtonElement).style.color = '#6366f1';
-                }}
-                onMouseLeave={(e) => {
-                  (e.target as HTMLButtonElement).style.background = 'transparent';
-                  (e.target as HTMLButtonElement).style.color = '#64748b';
-                }}
+                style={{ padding: '7px 14px', border: 'none', cursor: 'pointer', fontSize: 12, fontWeight: 600 }}
               >
-                ⊙ {t('graph.fit_view')}
+                {t('graph.fit_view')}
               </button>
             </>
           )}
@@ -1358,22 +1382,11 @@ const KnowledgeGraph: React.FC<KnowledgeGraphProps> = ({ data, onNodeClick, onNo
             <>
               <button
                 onClick={(e) => { e.stopPropagation(); setShow3DEdges(!show3DEdges); }}
-                style={{
-                  padding: '7px 14px',
-                  borderRadius: 10,
-                  border: 'none',
-                  cursor: 'pointer',
-                  fontSize: 12,
-                  fontWeight: 600,
-                  transition: 'all 0.2s ease',
-                  background: show3DEdges 
-                    ? 'rgba(99,102,241,0.2)' 
-                    : 'transparent',
-                  color: show3DEdges ? '#818cf8' : '#cbd5e1',
-                }}
+                data-active={show3DEdges}
+                style={{ padding: '7px 14px', border: 'none', cursor: 'pointer', fontSize: 12, fontWeight: 600 }}
                 title={show3DEdges ? t('graph.hide_edges') : t('graph.show_edges')}
               >
-                🕸️ {show3DEdges ? t('graph.edges_on') : t('graph.edges_off')}
+                {show3DEdges ? t('graph.edges_on') : t('graph.edges_off')}
               </button>
             </>
           )}
@@ -1397,24 +1410,10 @@ const KnowledgeGraph: React.FC<KnowledgeGraphProps> = ({ data, onNodeClick, onNo
                   }
                 }
               }}
-              style={{
-                padding: '7px 14px',
-                borderRadius: 10,
-                border: 'none',
-                cursor: 'pointer',
-                fontSize: 12,
-                fontWeight: 600,
-                transition: 'all 0.2s ease',
-                background: viewMode === mode
-                  ? 'linear-gradient(135deg, #6366f1, #8b5cf6)'
-                  : 'transparent',
-                color: viewMode === mode ? '#fff' : (viewMode === '3d' ? '#cbd5e1' : '#64748b'),
-                boxShadow: viewMode === mode
-                  ? '0 2px 8px rgba(99,102,241,0.3)'
-                  : 'none',
-              }}
+              data-active={viewMode === mode}
+              style={{ padding: '7px 14px', border: 'none', cursor: 'pointer', fontSize: 12, fontWeight: 600 }}
             >
-              {mode === '2d' ? '▦ 2D' : '🌐 3D'}
+              {mode === '2d' ? '2D' : '3D'}
             </button>
           ))}
         </div>
@@ -1448,6 +1447,7 @@ const KnowledgeGraph: React.FC<KnowledgeGraphProps> = ({ data, onNodeClick, onNo
       {/* 底部节点信息面板（2D/3D 通用，扁平化布局） */}
       {selectedNodeInfo && (
         <div
+          className="glass glass--thick glass--grain glass--lit graph-info-panel"
           style={{
             position: 'absolute',
             left: 16,
@@ -1455,11 +1455,6 @@ const KnowledgeGraph: React.FC<KnowledgeGraphProps> = ({ data, onNodeClick, onNo
             bottom: 16,
             maxHeight: 'calc(100% - 100px)',
             overflowY: 'auto',
-            borderRadius: 16,
-            background: 'rgba(255,255,255,0.92)',
-            backdropFilter: 'blur(16px)',
-            boxShadow: '0 8px 32px rgba(0,0,0,0.12), 0 2px 8px rgba(0,0,0,0.06)',
-            border: '1px solid rgba(255,255,255,0.6)',
             padding: '16px 22px',
             zIndex: 40,
             animation: 'fadeIn 0.2s ease-out',
@@ -1476,7 +1471,7 @@ const KnowledgeGraph: React.FC<KnowledgeGraphProps> = ({ data, onNodeClick, onNo
               background: 'none',
               border: 'none',
               fontSize: 16,
-              color: '#94a3b8',
+              color: 'hsl(var(--muted-foreground))',
               cursor: 'pointer',
               lineHeight: 1,
               padding: 4,
@@ -1492,17 +1487,17 @@ const KnowledgeGraph: React.FC<KnowledgeGraphProps> = ({ data, onNodeClick, onNo
             gap: 20,
             marginBottom: 12,
             paddingBottom: 10,
-            borderBottom: '2px solid rgba(99,102,241,0.15)',
+            borderBottom: '1px solid hsl(var(--foreground) / .14)',
             paddingRight: 30,
           }}>
             <div style={{
               fontSize: 16,
               fontWeight: 700,
-              color: '#1e293b',
+              color: 'hsl(var(--foreground))',
               whiteSpace: 'nowrap',
               flexShrink: 0,
             }}>
-              🔵 {selectedNodeInfo.name}
+              {selectedNodeInfo.name}
             </div>
             <div style={{
               display: 'flex',
@@ -1511,28 +1506,28 @@ const KnowledgeGraph: React.FC<KnowledgeGraphProps> = ({ data, onNodeClick, onNo
               flex: 1,
               minWidth: 120,
             }}>
-              <span style={{ fontSize: 12, color: '#64748b', fontWeight: 500, whiteSpace: 'nowrap', flexShrink: 0 }}>
+              <span style={{ fontSize: 12, color: 'hsl(var(--muted-foreground))', fontWeight: 500, whiteSpace: 'nowrap', flexShrink: 0 }}>
                 {t('graph.mastery')}
               </span>
               <div style={{
                 flex: 1,
                 height: 6,
                 borderRadius: 3,
-                background: '#e2e8f0',
+                background: 'hsl(var(--foreground) / .14)',
                 overflow: 'hidden',
               }}>
                 <div style={{
                   height: '100%',
                   width: `${selectedNodeInfo.mastery * 100}%`,
                   borderRadius: 3,
-                  background: 'linear-gradient(90deg, #6366f1, #8b5cf6, #a78bfa)',
+                  background: 'linear-gradient(90deg, hsl(var(--primary)), hsl(var(--accent)))',
                   transition: 'width 0.5s ease',
                 }} />
               </div>
               <span style={{
                 fontSize: 13,
                 fontWeight: 700,
-                color: selectedNodeInfo.mastery > 0.6 ? '#059669' : selectedNodeInfo.mastery > 0.3 ? '#d97706' : '#6366f1',
+                color: selectedNodeInfo.mastery > 0.6 ? 'hsl(var(--accent))' : selectedNodeInfo.mastery > 0.3 ? 'hsl(var(--primary))' : 'hsl(var(--muted-foreground))',
                 whiteSpace: 'nowrap',
                 flexShrink: 0,
               }}>
@@ -1555,7 +1550,7 @@ const KnowledgeGraph: React.FC<KnowledgeGraphProps> = ({ data, onNodeClick, onNo
                   fontWeight: 600,
                   textTransform: 'uppercase',
                   letterSpacing: '0.05em',
-                  color: '#f59e0b',
+                  color: 'hsl(var(--accent))',
                   marginBottom: 6,
                 }}>
                   ▲ {t('graph.prerequisites') || '前驱知识'}
@@ -1563,17 +1558,17 @@ const KnowledgeGraph: React.FC<KnowledgeGraphProps> = ({ data, onNodeClick, onNo
                 {selectedNodeInfo.parents.map((p, i) => (
                   <div key={i} style={{
                     fontSize: 13,
-                    color: '#334155',
+                    color: 'hsl(var(--foreground) / .88)',
                     padding: '4px 0',
-                    borderBottom: i < selectedNodeInfo.parents.length - 1 ? '1px solid #f1f5f9' : 'none',
+                    borderBottom: i < selectedNodeInfo.parents.length - 1 ? '1px solid hsl(var(--foreground) / .1)' : 'none',
                     display: 'flex',
                     alignItems: 'baseline',
                     gap: 6,
                   }}>
-                    <span style={{ color: '#f59e0b', fontSize: 10, flexShrink: 0 }}>●</span>
+                    <span style={{ color: 'hsl(var(--accent))', fontSize: 10, flexShrink: 0 }}>●</span>
                     <span style={{ fontWeight: 500, flexShrink: 0 }}>{p.name}</span>
                     {p.relation && (
-                      <span style={{ fontSize: 13, color: '#78899a', fontStyle: 'italic' }}>
+                      <span style={{ fontSize: 13, color: 'hsl(var(--muted-foreground))', fontStyle: 'italic' }}>
                         {p.relation}
                       </span>
                     )}
@@ -1590,7 +1585,7 @@ const KnowledgeGraph: React.FC<KnowledgeGraphProps> = ({ data, onNodeClick, onNo
                   fontWeight: 600,
                   textTransform: 'uppercase',
                   letterSpacing: '0.05em',
-                  color: '#06b6d4',
+                  color: 'hsl(var(--primary))',
                   marginBottom: 6,
                 }}>
                   ▼ {t('graph.subsequent') || '后续知识'}
@@ -1598,17 +1593,17 @@ const KnowledgeGraph: React.FC<KnowledgeGraphProps> = ({ data, onNodeClick, onNo
                 {selectedNodeInfo.children.map((c, i) => (
                   <div key={i} style={{
                     fontSize: 13,
-                    color: '#334155',
+                    color: 'hsl(var(--foreground) / .88)',
                     padding: '4px 0',
-                    borderBottom: i < selectedNodeInfo.children.length - 1 ? '1px solid #f1f5f9' : 'none',
+                    borderBottom: i < selectedNodeInfo.children.length - 1 ? '1px solid hsl(var(--foreground) / .1)' : 'none',
                     display: 'flex',
                     alignItems: 'baseline',
                     gap: 6,
                   }}>
-                    <span style={{ color: '#06b6d4', fontSize: 10, flexShrink: 0 }}>●</span>
+                    <span style={{ color: 'hsl(var(--primary))', fontSize: 10, flexShrink: 0 }}>●</span>
                     <span style={{ fontWeight: 500, flexShrink: 0 }}>{c.name}</span>
                     {c.relation && (
-                      <span style={{ fontSize: 13, color: '#78899a', fontStyle: 'italic' }}>
+                      <span style={{ fontSize: 13, color: 'hsl(var(--muted-foreground))', fontStyle: 'italic' }}>
                         {c.relation}
                       </span>
                     )}
@@ -1620,7 +1615,7 @@ const KnowledgeGraph: React.FC<KnowledgeGraphProps> = ({ data, onNodeClick, onNo
 
           {/* 无父子关系时的提示 */}
           {selectedNodeInfo.parents.length === 0 && selectedNodeInfo.children.length === 0 && (
-            <div style={{ fontSize: 12, color: '#94a3b8', fontStyle: 'italic', textAlign: 'center', padding: '8px 0' }}>
+            <div style={{ fontSize: 12, color: 'hsl(var(--muted-foreground))', fontStyle: 'italic', textAlign: 'center', padding: '8px 0' }}>
               此节点暂无关联关系
             </div>
           )}
@@ -1630,6 +1625,7 @@ const KnowledgeGraph: React.FC<KnowledgeGraphProps> = ({ data, onNodeClick, onNo
       {/* 边关系详情弹窗 - 精致的浮动卡片 */}
       {selectedEdgeInfo && (
         <div
+          className="glass glass--thick glass--grain glass--lit graph-info-panel"
           style={{
             position: 'fixed',
             left: selectedEdgeInfo.x,
@@ -1639,11 +1635,6 @@ const KnowledgeGraph: React.FC<KnowledgeGraphProps> = ({ data, onNodeClick, onNo
             minWidth: '220px',
             maxWidth: '320px',
             padding: '16px',
-            borderRadius: '14px',
-            background: 'rgba(255,255,255,0.95)',
-            backdropFilter: 'blur(12px)',
-            boxShadow: '0 8px 32px rgba(0,0,0,0.12), 0 2px 8px rgba(0,0,0,0.06)',
-            border: '1px solid rgba(0,0,0,0.06)',
             zIndex: 50,
             animation: 'fadeInUp 0.2s ease-out',
           }}
@@ -1654,14 +1645,14 @@ const KnowledgeGraph: React.FC<KnowledgeGraphProps> = ({ data, onNodeClick, onNo
             fontWeight: 600,
             textTransform: 'uppercase',
             letterSpacing: '0.05em',
-            color: '#6366f1',
+            color: 'hsl(var(--primary))',
             marginBottom: 8,
           }}>
             {t('graph.relation_info')}
           </div>
           <div style={{
             fontSize: 13,
-            color: '#334155',
+            color: 'hsl(var(--foreground) / .88)',
             lineHeight: 1.5,
             marginBottom: 12,
           }}>
@@ -1672,28 +1663,28 @@ const KnowledgeGraph: React.FC<KnowledgeGraphProps> = ({ data, onNodeClick, onNo
             alignItems: 'center',
             gap: 8,
           }}>
-            <span style={{ fontSize: 11, color: '#94a3b8', fontWeight: 500 }}>
+            <span style={{ fontSize: 11, color: 'hsl(var(--muted-foreground))', fontWeight: 500 }}>
               {t('graph.relation_strength')}
             </span>
             <div style={{
               flex: 1,
               height: 4,
               borderRadius: 2,
-              background: '#e2e8f0',
+              background: 'hsl(var(--foreground) / .14)',
               overflow: 'hidden',
             }}>
               <div style={{
                 height: '100%',
                 width: `${selectedEdgeInfo.weight * 100}%`,
                 borderRadius: 2,
-                background: 'linear-gradient(90deg, #6366f1, #8b5cf6)',
+                background: 'linear-gradient(90deg, hsl(var(--primary)), hsl(var(--accent)))',
                 transition: 'width 0.3s ease',
               }} />
             </div>
             <span style={{
               fontSize: 12,
               fontWeight: 600,
-              color: '#6366f1',
+              color: 'hsl(var(--primary))',
               minWidth: 36,
               textAlign: 'right',
             }}>

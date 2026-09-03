@@ -597,7 +597,7 @@ class LearningService:
 
         if knowledge_point.is_plan_completed():
             return {
-                "content": "🎉 所有教学步骤已完成！恭喜你完成了本知识点的学习！",
+                "content": "这个知识点的步骤都讲完了。",
                 "sources": [],
                 "current_step": knowledge_point.current_step,
                 "total_steps": len(knowledge_point.teaching_plan),

@@ -17,8 +17,10 @@ const Input = React.forwardRef<HTMLInputElement, InputProps>(
           "text-foreground placeholder:text-muted-foreground/70",
           "border-0 outline-none transition-all duration-300",
           "[transition-timing-function:var(--glass-ease-out)]",
-          "focus-visible:ring-2 focus-visible:ring-ring/70 focus-visible:ring-offset-0",
-          "focus-visible:bg-white/[0.06] focus-visible:shadow-[inset_0_1px_3px_rgba(0,0,0,0.3),0_0_0_3px_hsl(var(--ring)/0.25)]",
+          "focus-visible:ring-0 focus-visible:ring-offset-0",
+          // 聚焦提示靠"内凹变亮 + 一圈很淡的光晕"，不用高饱和描边——
+          // 那个亮黄描边比输入框本身还抢眼。
+          "focus-visible:bg-white/[0.07] focus-visible:shadow-[inset_0_1px_3px_rgba(0,0,0,0.28),inset_0_0_0_1px_hsl(var(--ring)/0.45),0_0_0_3px_hsl(var(--ring)/0.12)]",
           "disabled:cursor-not-allowed disabled:opacity-45",
           "file:border-0 file:bg-transparent file:text-sm file:font-medium",
           className

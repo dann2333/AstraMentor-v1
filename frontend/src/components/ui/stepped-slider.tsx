@@ -35,7 +35,7 @@ export function SteppedSlider({ value, onChange, steps, disabled = false }: Step
         <div className="absolute w-full h-1.5 rounded-full bg-muted" />
         {/* 高亮填充轨道 */}
         <div
-          className="absolute h-1.5 rounded-full bg-gradient-to-r from-blue-500 to-cyan-500 transition-all duration-200"
+          className="absolute h-1.5 rounded-full bg-primary transition-all duration-200"
           style={{ width: `${percentage}%` }}
         />
         {/* 分段刻度点 */}
@@ -47,7 +47,7 @@ export function SteppedSlider({ value, onChange, steps, disabled = false }: Step
               key={i}
               className={`absolute w-2.5 h-2.5 rounded-full border-2 transition-colors duration-200 ${
                 isActive
-                  ? 'bg-blue-500 border-blue-500'
+                  ? 'bg-primary border-primary'
                   : 'bg-background border-muted-foreground/30'
               }`}
               style={{ left: `${left}%`, transform: 'translateX(-50%)' }}
@@ -71,7 +71,7 @@ export function SteppedSlider({ value, onChange, steps, disabled = false }: Step
           className={`absolute w-5 h-5 rounded-full shadow-md border-2 transition-all duration-200 pointer-events-none ${
             disabled
               ? 'bg-muted border-muted-foreground/30'
-              : 'bg-white border-blue-500 shadow-blue-500/25'
+              : 'bg-background border-primary shadow-[0_2px_8px_hsl(var(--primary)/.35)]'
           }`}
           style={{ left: `${percentage}%`, transform: 'translateX(-50%)' }}
         />
@@ -86,7 +86,7 @@ export function SteppedSlider({ value, onChange, steps, disabled = false }: Step
               key={i}
               className={`text-xs transition-colors duration-200 select-none ${
                 isSelected
-                  ? 'text-blue-500 font-semibold'
+                  ? 'font-semibold text-primary'
                   : 'text-muted-foreground'
               }`}
             >

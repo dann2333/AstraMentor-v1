@@ -77,7 +77,7 @@ export function AddNodeDialog({
               max="1"
               value={currentMastery}
               onChange={(e) => setCurrentMastery(parseFloat(e.target.value) || 0)}
-              className="col-span-3 bg-slate-50 border-slate-200 focus:border-blue-500 transition-colors"
+              className="col-span-3"
               disabled={isAdding}
             />
           </div>
@@ -94,7 +94,7 @@ export function AddNodeDialog({
               max="1"
               value={targetMastery}
               onChange={(e) => setTargetMastery(parseFloat(e.target.value) || 0.8)}
-              className="col-span-3 bg-slate-50 border-slate-200 focus:border-blue-500 transition-colors"
+              className="col-span-3"
               disabled={isAdding}
             />
           </div>
@@ -108,7 +108,7 @@ export function AddNodeDialog({
               placeholder={t('add_node.note_placeholder')}
               value={note}
               onChange={(e) => setNote(e.target.value)}
-              className="col-span-3 bg-slate-50 border-slate-200 focus:border-blue-500 transition-colors min-h-[80px]"
+              className="col-span-3 min-h-[80px]"
               disabled={isAdding}
             />
           </div>
@@ -117,7 +117,7 @@ export function AddNodeDialog({
           <Button
             onClick={handleSubmit}
             disabled={isAdding || !name.trim()}
-            className="w-full bg-gradient-to-r from-emerald-600 to-teal-600 text-white hover:from-emerald-700 hover:to-teal-700"
+            className="w-full"
           >
             {isAdding ? (
               <>
