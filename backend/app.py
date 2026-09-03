@@ -6,6 +6,8 @@ from backend.api import router
 from backend.doc_api import doc_router
 from backend.course_api import course_router
 from backend.session_api import session_router
+from backend.auth_api import auth_router
+from backend.user_data_api import user_data_router
 from rag.errors import CourseIndexNotReadyError
 
 # NOTE: 配置日志级别，确保项目模块的 INFO 日志可见
@@ -38,6 +40,8 @@ app.include_router(router, prefix="/api")
 app.include_router(doc_router, prefix="/api/doc")
 app.include_router(course_router, prefix="/api")
 app.include_router(session_router, prefix="/api")
+app.include_router(auth_router, prefix="/api")
+app.include_router(user_data_router, prefix="/api")
 
 if __name__ == "__main__":
     import uvicorn

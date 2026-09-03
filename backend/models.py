@@ -209,3 +209,82 @@ class SessionSnapshotRequest(BaseModel):
     doc_id: Optional[str] = None
     doc_filename: Optional[str] = None
     project_description: Optional[str] = None
+
+
+# ============================================================================
+# 账号与鉴权模型
+# ============================================================================
+
+class RegisterRequest(BaseModel):
+    """注册请求：用户名 + 密码，邮箱与昵称可选"""
+
+    username: str = Field(min_length=3, max_length=32)
+    password: str = Field(min_length=8, max_length=128)
+    email: Optional[str] = Field(default=None, max_length=254)
+    display_name: Optional[str] = Field(default=None, max_length=64)
+
+
+class LoginRequest(BaseModel):
+    """登录请求：username 字段同时接受用户名或邮箱"""
+
+    username: str = Field(min_length=1, max_length=254)
+    password: str = Field(min_length=1, max_length=128)
+    label: str = Field(default="", max_length=64)
+
+
+class UpdateProfileRequest(BaseModel):
+    """资料更新请求：仅提交需要修改的字段"""
+
+    display_name: Optional[str] = Field(default=None, max_length=64)
+    email: Optional[str] = Field(default=None, max_length=254)
+    clear_email: bool = False
+
+
+class ChangePasswordRequest(BaseModel):
+    """修改密码：需要验证当前密码，成功后所有令牌失效"""
+
+    current_password: str = Field(min_length=1, max_length=128)
+    new_password: str = Field(min_length=8, max_length=128)
+
+
+class DeleteAccountRequest(BaseModel):
+    """注销账号：需要密码二次确认"""
+
+    password: str = Field(min_length=1, max_length=128)
+
+
+class UserResponse(BaseModel):
+    """对外暴露的账号信息，绝不包含密码散列"""
+
+    id: str
+    username: str
+    email: Optional[str] = None
+    display_name: str
+    is_active: bool
+    created_at: str
+    updated_at: str
+    last_login_at: Optional[str] = None
+
+
+class TokenResponse(BaseModel):
+    """登录/注册成功后返回的 Bearer 令牌"""
+
+    access_token: str
+    token_type: str = "bearer"
+    expires_at: str
+    user: UserResponse
+
+
+class TokenSummary(BaseModel):
+    """已签发令牌的摘要，用于账号安全页展示与吊销"""
+
+    id: str
+    label: str = ""
+    created_at: str
+    expires_at: str
+    last_used_at: Optional[str] = None
+    revoked_at: Optional[str] = None
+
+
+class UserSessionSnapshotRequest(SessionSnapshotRequest):
+    """账号维度的学习快照，与匿名快照共用字段定义"""
