@@ -15,7 +15,10 @@ from backend.classroom_api import admin_router, classroom_router
 from backend.assignment_api import assignment_router
 from rag.errors import CourseIndexNotReadyError
 from services.learning_store import PayloadTooLarge
+from utils.api_client import MissingAPIKey
+from config import get_config
 from services.legacy_import import import_legacy_data
+from backend.static_site import mount_frontend
 
 # NOTE: 配置日志级别，确保项目模块的 INFO 日志可见
 logging.basicConfig(
@@ -51,8 +54,32 @@ def _import_legacy_data_once() -> None:
         )
 
 
+def _log_model_config() -> None:
+    """启动时把模型配置打出来，并在缺 Key 时明确说一句。
+
+    镜像默认整套指向 Kimi K3，部署者只需要给一个 ASTRA_API_KEY。把这件事
+    写在启动日志的第一屏，比让人先点一下界面、撞到报错再去翻文档要省事。
+    """
+    api = get_config().api
+    logger.info(
+        "模型配置: provider=%s model=%s endpoint=%s reasoning_effort=%s",
+        api.provider,
+        api.model_name,
+        api.api_endpoint,
+        api.reasoning_effort,
+    )
+    if api.api_key:
+        return
+    logger.warning(
+        "未检测到 ASTRA_API_KEY —— 页面能打开，但生成星图、讲解、出题都会"
+        "返回 503。设置该环境变量后重启即可"
+        "（Docker: docker run -e ASTRA_API_KEY=sk-... ...）。"
+    )
+
+
 @asynccontextmanager
 async def lifespan(_app: FastAPI):
+    _log_model_config()
     _import_legacy_data_once()
     yield
 
@@ -72,6 +99,18 @@ async def payload_too_large_handler(
     任何路径下的超大写入都得到同一个明确答复，而不是一个 500。
     """
     return JSONResponse(status_code=413, content={"detail": str(exc)})
+
+
+@app.exception_handler(MissingAPIKey)
+async def missing_api_key_handler(
+    _request: Request, exc: MissingAPIKey
+) -> JSONResponse:
+    """没配 Key 时给一句能照着做的话，而不是 500。
+
+    每个需要模型的接口都会在构造 APIClient 时撞上这个异常，所以在这里兜一次
+    就够了。用 503 而不是 500：服务本身是好的，缺的是一项配置，补上重启即可。
+    """
+    return JSONResponse(status_code=503, content={"detail": str(exc)})
 
 
 @app.exception_handler(CourseIndexNotReadyError)
@@ -99,6 +138,11 @@ app.include_router(user_data_router, prefix="/api")
 app.include_router(classroom_router, prefix="/api")
 app.include_router(assignment_router, prefix="/api")
 app.include_router(admin_router, prefix="/api")
+
+# 前端挂在最后：`/` 上的 Mount 会匹配一切路径，放在路由之前会把 /api 和
+# /docs 一起盖掉。仓库里默认没有 frontend/dist，所以这行在开发和测试环境
+# 是空操作。
+mount_frontend(app)
 
 if __name__ == "__main__":
     import uvicorn

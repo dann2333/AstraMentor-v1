@@ -19,6 +19,15 @@ from utils.web_research import (
 logger = logging.getLogger(__name__)
 
 
+class MissingAPIKey(RuntimeError):
+    """没配 ASTRA_API_KEY。
+
+    单独立一个异常类型，是为了让接口层能把它翻成一句人看得懂的提示。
+    以前这里抛 ValueError，一路冒到 FastAPI 变成 500 Internal Server Error，
+    第一次部署的人只会看到"服务器错误"，完全不知道是差一个环境变量。
+    """
+
+
 class APIClient:
     """
     统一 LLM API 客户端
@@ -32,10 +41,14 @@ class APIClient:
     # 拿到实例，这个开关也总是存在。真正被拒绝时写的是实例属性，不会串台。
     _temperature_unsupported: bool = False
 
+    # 同理放类属性：绕过 __init__ 造出来的实例也得有个可用的默认强度。
+    reasoning_effort: str = "low"
+
     def __init__(self, model_name: Optional[str] = None):
         config = get_config()
         self.provider = config.api.provider.lower()
         self.model_name = model_name or config.api.model_name
+        self.reasoning_effort = config.api.reasoning_effort or "low"
 
         # 部分推理模型把 temperature 锁死为 1，第一次被拒后就不再传（见
         # _create_completion）。放在实例上而不是模块级，是因为同一进程里
@@ -50,7 +63,11 @@ class APIClient:
 
         api_key = config.api.api_key or os.getenv("GEMINI_API_KEY") or os.getenv("ZHIPU_API_KEY") or os.getenv("DASHSCOPE_API_KEY")
         if not api_key:
-            raise ValueError("Missing API key (ASTRA_API_KEY / GEMINI_API_KEY / ZHIPU_API_KEY / DASHSCOPE_API_KEY)")
+            raise MissingAPIKey(
+                f"还没配置模型 API Key，无法调用 {self.model_name}。"
+                "请设置环境变量 ASTRA_API_KEY 后重启服务"
+                "（Docker 用户：docker run -e ASTRA_API_KEY=sk-...）。"
+            )
 
         if self.provider == "gemini":
             self._init_gemini(api_key, config)
@@ -105,10 +122,14 @@ class APIClient:
         """把 thinking 开关翻译成各家 OpenAI 兼容端点能懂的参数。
 
         Kimi K3 始终开启思考模式，强度用请求顶层 reasoning_effort
-        （low / high / max，默认 max）控制；智谱等则用 reasoning.enabled。
+        （low / high / max）控制；智谱等则用 reasoning.enabled。
+
+        强度取 config 里的 reasoning_effort（默认 low），界面上的 Thinking
+        开关只决定思考过程要不要展示出来——K3 本来也关不掉思考，之前按开关
+        切到 high 的结果是用户一勾就多等好几分钟，还以为是卡住了。
         """
         if self.provider in ("moonshot", "kimi"):
-            kwargs["extra_body"] = {"reasoning_effort": "high" if thinking else "low"}
+            kwargs["extra_body"] = {"reasoning_effort": self.reasoning_effort}
         elif thinking:
             kwargs["extra_body"] = {"reasoning": {"enabled": True}}
 

@@ -193,7 +193,87 @@ graph TD
 
 ---
 
+## 🐳 用 Docker 跑（推荐，一条命令）
+
+镜像里已经包含前端、后端、课程知识库索引和在线 IDE 的语言工具链，
+一个容器、一个端口就能用。模型默认就是 **Kimi K3、推理强度 low**，
+所以**唯一需要你填的是 API Key**。
+
+```bash
+docker run -d --name astramentor \
+  -p 8000:8000 \
+  -e ASTRA_API_KEY=sk-你的Kimi密钥 \
+  -v astramentor-data:/data \
+  ghcr.io/dann2333/astramentor-v1:latest
+```
+
+打开 <http://localhost:8000> 即可。
+
+Key 在 [Kimi 开放平台](https://platform.moonshot.cn/console/api-keys) 创建。
+K3 是旗舰模型，需要先充值（最低 10 元）解锁，新用户代金券不能用于 K3。
+
+> 没填 Key 时页面照样能打开，只是生成星图/讲解/出题会返回一句
+> "还没配置模型 API Key" 的提示，补上环境变量重启即可。
+
+### 或者用 docker compose
+
+```bash
+echo 'ASTRA_API_KEY=sk-你的Kimi密钥' > .env
+docker compose up -d
+```
+
+### 镜像说明
+
+| 项目 | 说明 |
+| --- | --- |
+| 架构 | `linux/amd64` 与 `linux/arm64`（含 Apple Silicon、树莓派 4/5、各家 ARM 云主机），`docker pull` 会按本机架构自动选 |
+| 端口 | `8000`，页面和 `/api` 同一个端口，没有跨域问题 |
+| 数据 | 挂 `/data`：SQLite 库和上传的 PDF 都在里面，容器重建不丢 |
+| 用户 | 非 root（uid 10001） |
+| 健康检查 | 内置，`docker ps` 能直接看到 healthy |
+
+可选的环境变量（都有默认值，一般不用动）：
+
+| 变量 | 默认值 | 说明 |
+| --- | --- | --- |
+| `ASTRA_API_KEY` | 无，**必填** | 模型密钥 |
+| `ASTRA_PROVIDER` | `moonshot` | 换模型厂商：`gemini` / `zhipu` / `qwen` / 任意 OpenAI 兼容 |
+| `ASTRA_API_ENDPOINT` | `https://api.moonshot.cn/v1` | API 根地址，只到 `/v1` |
+| `ASTRA_MODEL_NAME` | `kimi-k3` | 模型名 |
+| `ASTRA_REASONING_EFFORT` | `low` | K3 的推理强度，可选 `low` / `high` / `max` |
+| `ASTRA_ALLOW_ANONYMOUS` | `true` | 设为 `false` 则强制全站登录 |
+| `ASTRA_WEB_SEARCH_ENABLED` | `true` | 关闭联网搜索 |
+
+### 自己构建
+
+```bash
+# 只出当前机器的架构
+docker build -t astramentor .
+
+# 出多架构镜像并推送
+docker buildx build --platform linux/amd64,linux/arm64 \
+  -t ghcr.io/<你的账号>/astramentor-v1:latest --push .
+
+# 不需要在线 IDE 的话可以省掉 Go/JDK/GCC，镜像小一半以上
+docker build --build-arg WITH_IDE_TOOLCHAIN=false -t astramentor:slim .
+```
+
+推送到 `main` 或打 `v*` 标签时，`.github/workflows/docker-image.yml`
+会在原生 amd64 / arm64 runner 上各构建一份，再合成一个多架构 manifest
+推到 GHCR，不需要配置任何 Secret（用的是 Actions 自带的 `GITHUB_TOKEN`）。
+
+> GHCR 上的包首次推送默认是私有的。想让别人直接 `docker pull`，
+> 去仓库的 Packages 页面把 astramentor-v1 的可见性改成 public。
+
+> ⚠️ 在线 IDE 会在容器里执行使用者提交的代码。镜像已经以非 root 运行，
+> compose 里也加了 `no-new-privileges` 和内存/进程数上限，但这不是安全沙箱。
+> 要对公网开放，请再套一层容器隔离或换成专用的代码执行服务。
+
+---
+
 ## 🚀 快速开始 (Quick Start)
+
+> 想跳过环境搭建，直接看上面的 Docker 一条命令。下面是源码开发的步骤。
 
 ### 前置要求
 
