@@ -307,7 +307,7 @@ jobs:
         run: |
           set -uo pipefail   # 刻意不用 -e：这一步的每种组合都允许失败
 
-          echo "内核对非特权 user namespace 的设置（runner 宿主）："
+          echo "宿主对非特权 user namespace 的设置："
           for key in kernel.unprivileged_userns_clone kernel.apparmor_restrict_unprivileged_userns; do
             printf '  %s = %s\n' "$key" "$(sysctl -n "$key" 2>/dev/null || echo '未设置')"
           done
@@ -316,31 +316,41 @@ jobs:
           # 走的是同一段代码，不另写一套。
           PROBE_PY='from services.sandbox import probe; ok, detail = probe(); print(("OK" if ok else "FAIL") + " " + detail)'
 
-          # 基线是 docker-compose.yml 里那套加固参数，这样得出的结论可以
-          # 直接抄进 compose，不用再换算。
-          BASE="--rm -w /app --read-only --tmpfs /tmp:size=64m,mode=1777 --cap-drop ALL --security-opt no-new-privileges:true"
+          # 两个维度分开试：LSM 策略（apparmor / seccomp）和 capability。
+          # 上一轮只试了 LSM，六种组合里报错逐级后移，最后都停在
+          # "loopback: Failed RTM_NEWADDR: Operation not permitted" ——
+          # 给新 netns 配 lo 要 CAP_NET_ADMIN，而基线里带着 --cap-drop ALL。
+          # 所以这轮把 capability 也排进去。
+          HARD="--read-only --tmpfs /tmp:size=64m,mode=1777 --cap-drop ALL --security-opt no-new-privileges:true"
+          UNCONF="--security-opt apparmor=unconfined --security-opt seccomp=unconfined"
 
+          : > /tmp/perm.md
           try() {
-            local label="$1"; shift
-            local out
-            out=$(docker run $BASE "$@" astramentor:smoke python -c "$PROBE_PY" 2>&1 | tail -3 | tr '\n' ' ')
+            label="$1"; shift
+            flags="$1"
+            # shellcheck disable=SC2086 - flags 需要被拆成多个参数
+            out=$(docker run --rm -w /app $flags astramentor:smoke python -c "$PROBE_PY" 2>&1 | tail -3 | tr '\n' ' ')
+            # 只保留 bwrap 自己那句，后面那段中文提示每行都一样，没有信息量
+            brief=$(printf '%s' "$out" | sed 's/。最常见的原因.*//')
             case "$out" in
-              OK*) printf '  ✅ %-46s %s\n' "$label" "$out"
-                   echo "| \`$label\` | ✅ 可用 |" >> /tmp/perm.md ;;
-              *)   printf '  ❌ %-46s %s\n' "$label" "$out"
-                   echo "| \`$label\` | ❌ $(printf '%s' "$out" | cut -c1-120) |" >> /tmp/perm.md ;;
+              OK*) printf '  ✅ %s\n' "$label"
+                   echo "| $label | ✅ 可用 |" >> /tmp/perm.md ;;
+              *)   printf '  ❌ %-42s %s\n' "$label" "$brief"
+                   echo "| $label | ❌ $(printf '%s' "$brief" | cut -c1-140) |" >> /tmp/perm.md ;;
             esac
           }
 
-          : > /tmp/perm.md
           echo "::group::逐个组合实测"
-          try "（默认策略，不加任何 flag）"
-          try "--security-opt seccomp=unconfined" --security-opt seccomp=unconfined
-          try "--security-opt apparmor=unconfined" --security-opt apparmor=unconfined
-          try "apparmor=unconfined + seccomp=unconfined" \
-            --security-opt apparmor=unconfined --security-opt seccomp=unconfined
-          try "--cap-add SYS_ADMIN" --cap-add SYS_ADMIN
-          try "--privileged（仅作对照，不要照抄）" --privileged
+          try "不加任何 flag（docker run 默认）"          ""
+          try "默认 caps + apparmor=unconfined"           "--security-opt apparmor=unconfined"
+          try "默认 caps + seccomp=unconfined"            "--security-opt seccomp=unconfined"
+          try "默认 caps + apparmor + seccomp"            "$UNCONF"
+          try "compose 那套加固（cap_drop ALL）"          "$HARD"
+          try "加固 + apparmor + seccomp"                 "$HARD $UNCONF"
+          try "加固 + apparmor + seccomp + NET_ADMIN"     "$HARD $UNCONF --cap-add NET_ADMIN"
+          try "加固 + apparmor + seccomp + SYS_ADMIN + NET_ADMIN" \
+                                                          "$HARD $UNCONF --cap-add SYS_ADMIN --cap-add NET_ADMIN"
+          try "--privileged（仅作对照，不要照抄）"        "--privileged"
           echo "::endgroup::"
 
           {
@@ -348,7 +358,7 @@ jobs:
             echo
             echo "宿主 \`kernel.apparmor_restrict_unprivileged_userns\` = $(sysctl -n kernel.apparmor_restrict_unprivileged_userns 2>/dev/null || echo '未设置')"
             echo
-            echo "| 附加权限 | bubblewrap 能否建立命名空间 |"
+            echo "| 组合 | bubblewrap 能否建立命名空间 |"
             echo "| --- | --- |"
             cat /tmp/perm.md
             echo
