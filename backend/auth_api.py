@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from fastapi import APIRouter, Depends, HTTPException, Query, status
 
+from config import get_config
 from backend.dependencies import get_access_token, get_account_service, get_current_user
 from backend.models import (
     ChangePasswordRequest,
@@ -49,6 +50,13 @@ def register(
     service: AccountService = Depends(get_account_service),
 ) -> TokenResponse:
     """Create an account and sign the caller in with a fresh token."""
+    # 公开部署又不想让任何人都能建号时，设 ASTRA_REGISTRATION_ENABLED=false。
+    # 只挡注册，已有账号照常登录；管理员仍可用
+    # `python -m services.bootstrap_admin <用户名>` 在服务端建号。
+    if not get_config().server.registration_enabled:
+        raise HTTPException(
+            status_code=403, detail="这个部署已关闭自助注册，请联系管理员开通账号。"
+        )
     try:
         user = service.register(
             request.username,

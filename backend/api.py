@@ -23,6 +23,7 @@ from backend.models import (
     GenerateProjectGraphRequest,
 )
 
+from config import get_config
 from services.code_runner import CodeRunner
 from services.streaming_service import encode_sse
 from rag.errors import CourseIndexNotReadyError
@@ -134,6 +135,16 @@ async def run_code(
 ):
     # NOTE: 代码执行不写任何数据，这里挂 get_owner_id 只为继承同一套准入规则：
     # ASTRA_ALLOW_ANONYMOUS=false 时它也必须登录才能调用。
+    #
+    # 但"要求登录"并不能让这个接口变安全：CodeRunner 是直接 subprocess 跑
+    # 提交上来的代码，没有沙箱，跑通就能读走容器里的一切（数据库、上传件、
+    # 环境变量里的 API Key）。所以公网部署必须用 ASTRA_CODE_RUNNER_ENABLED=false
+    # 关掉它，而不是指望登录墙。
+    if not get_config().server.code_runner_enabled:
+        raise HTTPException(
+            status_code=403,
+            detail="这个部署关闭了在线运行代码的功能（ASTRA_CODE_RUNNER_ENABLED=false）。",
+        )
     result = CodeRunner.run_code(request.language, request.code)
     return RunCodeResponse(**result)
 

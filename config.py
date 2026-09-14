@@ -124,6 +124,43 @@ class AuthConfig:
 
 
 @dataclass
+class ServerConfig:
+    """对外暴露相关的配置。
+
+    这几项的默认值是按"本机自己用"定的。开到公网时必须显式收紧——
+    README 的公网部署一节列了完整清单。
+    """
+
+    # 在线 IDE 的代码执行开关。
+    #
+    # CodeRunner 是直接 subprocess 跑使用者提交的代码，没有沙箱：能读到
+    # 容器里的一切（SQLite 库、上传的文件、环境变量里的 API Key），也能
+    # 往外发网络请求。本机自己用没问题，挂到公网上就是把一个 RCE 接口
+    # 摆在门口，所以公网部署一律设成 false。
+    code_runner_enabled: bool = field(
+        default_factory=lambda: os.getenv("ASTRA_CODE_RUNNER_ENABLED", "true").lower()
+        != "false"
+    )
+
+    # 允许跨域访问的来源，逗号分隔。默认 "*" 只适合本机开发。
+    # 单容器部署时前后端同源，这里填自己的域名即可（或干脆留空）。
+    cors_origins: list[str] = field(
+        default_factory=lambda: [
+            origin.strip()
+            for origin in os.getenv("ASTRA_CORS_ORIGINS", "*").split(",")
+            if origin.strip()
+        ]
+    )
+
+    # 单次注册开关。公开部署又不想让任何人都能建号时设成 false，
+    # 已有账号照常登录。
+    registration_enabled: bool = field(
+        default_factory=lambda: os.getenv("ASTRA_REGISTRATION_ENABLED", "true").lower()
+        != "false"
+    )
+
+
+@dataclass
 class Config:
     """全局配置类"""
 
@@ -131,6 +168,7 @@ class Config:
     learning: LearningConfig = field(default_factory=LearningConfig)
     storage: StorageConfig = field(default_factory=StorageConfig)
     auth: AuthConfig = field(default_factory=AuthConfig)
+    server: ServerConfig = field(default_factory=ServerConfig)
 
 
 # 全局配置实例

@@ -161,9 +161,74 @@ jobs:
 
           echo "冒烟测试全部通过（${{ matrix.platform }}）"
 
+      # deploy/docker-compose.public.yml 把根文件系统设成只读、丢掉所有
+      # capability、并关掉代码执行和访客模式。这些是"上线才生效"的配置，
+      # 最容易出现的事故就是它写在文档里但其实一开就起不来，所以这里照着
+      # 同一套参数再跑一遍。
+      - name: 冒烟测试：公网加固模式也能跑
+        run: |
+          set -euo pipefail
+
+          docker run -d --name hardened -p 18001:8000 \
+            --read-only \
+            --tmpfs /tmp:size=256m,mode=1777 \
+            --tmpfs /home/astra/.cache:size=64m \
+            --cap-drop ALL \
+            --security-opt no-new-privileges:true \
+            -e ASTRA_API_KEY=dummy-for-smoke \
+            -e ASTRA_CODE_RUNNER_ENABLED=false \
+            -e ASTRA_ALLOW_ANONYMOUS=false \
+            -e ASTRA_CORS_ORIGINS=https://astra.example.com \
+            astramentor:smoke
+
+          fail() { echo "::error::$1"; docker logs hardened || true; exit 1; }
+
+          echo "::group::等待服务就绪"
+          ready=0
+          for _ in $(seq 1 40); do
+            if curl -fsS --max-time 5 http://127.0.0.1:18001/api/courses > /dev/null 2>&1; then
+              ready=1; break
+            fi
+            sleep 3
+          done
+          echo "::endgroup::"
+          [ "$ready" = "1" ] || fail "只读根文件系统下服务起不来"
+
+          # 页面还得能打开，否则加固等于把站点弄坏了
+          curl -fsS --max-time 10 http://127.0.0.1:18001/ | grep -q 'id="root"' \
+            || fail "加固模式下首页打不开"
+
+          # 代码执行必须被挡住 —— 这是公网部署最要紧的一条
+          code=$(curl -s -o /tmp/run.json -w '%{http_code}' --max-time 15 \
+            -X POST http://127.0.0.1:18001/api/run-code \
+            -H 'Content-Type: application/json' \
+            -d '{"language":"python","code":"print(1)"}')
+          [ "$code" = "403" ] \
+            || fail "关了代码执行却还能调用，返回 $code：$(cat /tmp/run.json)"
+
+          # 强制登录：学习接口对未登录请求应当 401
+          code=$(curl -s -o /dev/null -w '%{http_code}' --max-time 10 \
+            http://127.0.0.1:18001/api/state)
+          [ "$code" = "401" ] || fail "关了访客模式却仍能匿名读状态，返回 $code"
+
+          # 根文件系统真的是只读
+          if docker exec hardened sh -c 'touch /app/should-not-write' 2>/dev/null; then
+            fail "根文件系统并不是只读的"
+          fi
+
+          # /data 仍然可写，否则注册和学习记录都存不下
+          docker exec hardened sh -c 'touch /data/.writable && rm /data/.writable' \
+            || fail "/data 不可写，数据一点都存不下来"
+
+          # 课程索引目录也要可写，不然教材更新后没法重建
+          docker exec hardened sh -c 'touch /app/rag/indexes/.writable && rm /app/rag/indexes/.writable' \
+            || echo "::warning::/app/rag/indexes 在纯 --read-only 下不可写；compose 里是靠具名卷挂上去的"
+
+          echo "加固模式冒烟测试通过（${{ matrix.platform }}）"
+
       - name: 收尾
         if: always()
-        run: docker rm -f smoke > /dev/null 2>&1 || true
+        run: docker rm -f smoke hardened > /dev/null 2>&1 || true
 
       - name: 构建并按 digest 推送
         id: build

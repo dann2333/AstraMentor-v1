@@ -1,0 +1,63 @@
+# AstraMentor 公网入口。
+#
+# 用 Caddy 是因为 HTTPS 证书完全自动：只要域名的 A 记录已经指到这台机器，
+# 它会自己去 Let's Encrypt 申请、自己续期，不用写 certbot 的定时任务。
+#
+# 域名由 compose 里的 ASTRA_DOMAIN 传进来。
+
+{$ASTRA_DOMAIN} {
+	# 证书到期提醒发到这个邮箱（compose 里的 ASTRA_ACME_EMAIL）
+	tls {$ASTRA_ACME_EMAIL}
+
+	encode zstd gzip
+
+	header {
+		# 一年的 HSTS。注意：一旦下发，这个域名在浏览器里就被记成"只走
+		# HTTPS"，短期内改不回 HTTP。确实要这样再留着，否则删掉这行。
+		Strict-Transport-Security "max-age=31536000; includeSubDomains"
+		X-Content-Type-Options "nosniff"
+		X-Frame-Options "DENY"
+		Referrer-Policy "strict-origin-when-cross-origin"
+		# 不让页面被别的站点嵌进 iframe 里钓鱼
+		Content-Security-Policy "frame-ancestors 'none'"
+		# 别把服务端技术栈报出去
+		-Server
+	}
+
+	# 登录和注册是撞库的主要靶子：按来源 IP 限速。
+	# 这段需要 caddy-ratelimit 插件，用官方镜像的话请看 deploy/README 里
+	# 关于自建 Caddy 镜像的说明；不想装插件就把整个 rate_limit 块删掉，
+	# 改用服务端自带的失败锁定（ASTRA_AUTH_MAX_FAILED_ATTEMPTS）。
+	@auth path /api/auth/login /api/auth/register
+	rate_limit @auth {
+		zone auth {
+			key {remote_host}
+			events 10
+			window 1m
+		}
+	}
+
+	# 前端产物带 hash，可以长期缓存；index.html 由后端自己发 no-cache。
+	@assets path /assets/*
+	header @assets Cache-Control "public, max-age=31536000, immutable"
+
+	reverse_proxy astramentor:8000 {
+		# 让后端知道真实客户端 IP 和协议（uvicorn 那边开了 --proxy-headers）
+		header_up X-Real-IP {remote_host}
+
+		# 星图生成、讲解都是 SSE 流式输出，而且一次可能跑好几分钟。
+		# 默认的读超时会把连接掐断，表现出来就是"讲到一半没了"。
+		transport http {
+			read_timeout 10m
+			write_timeout 10m
+		}
+		flush_interval -1
+	}
+
+	log {
+		output file /var/log/caddy/access.log {
+			roll_size 20MiB
+			roll_keep 5
+		}
+	}
+}

@@ -120,11 +120,16 @@ async def course_index_not_ready_handler(
     """Expose one stable recovery contract for all course-mode endpoints."""
     return JSONResponse(status_code=409, content={"detail": exc.to_detail()})
 
-# Configure CORS
+# 跨域。单容器部署时前端和 API 同源，本来不需要放开跨域；这里保留配置
+# 是为了前后端分开部署的场景。默认 "*" 只适合本机开发，公网部署应该用
+# ASTRA_CORS_ORIGINS 填上自己的域名。
+_cors_origins = get_config().server.cors_origins
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],  # For development, allow all origins
-    allow_credentials=True,
+    allow_origins=_cors_origins,
+    # 令牌是放在请求头里的 Bearer，不依赖 cookie。配了具体域名之后就没必要
+    # 再让浏览器带凭证跨域了，少一条可被利用的路径。
+    allow_credentials="*" not in _cors_origins,
     allow_methods=["*"],
     allow_headers=["*"],
 )

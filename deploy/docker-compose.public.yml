@@ -1,0 +1,100 @@
+# 公网部署：Caddy（自动 HTTPS）+ AstraMentor。
+#
+#   cd deploy
+#   cp .env.public.example .env
+#   # 填 ASTRA_DOMAIN / ASTRA_ACME_EMAIL / ASTRA_API_KEY
+#   docker compose -f docker-compose.public.yml up -d
+#
+# 和本机那份 docker-compose.yml 的区别，全在"把默认值收紧"这件事上：
+#   - 应用不再直接暴露端口，只有 Caddy 监听 80/443
+#   - 关掉在线 IDE 的代码执行（没有沙箱，开在公网等于 RCE）
+#   - 关掉访客模式，整站强制登录
+#   - CORS 收到自己的域名
+#   - 容器只读根文件系统 + 丢掉所有 capability
+
+services:
+  caddy:
+    image: caddy:2-alpine
+    container_name: astramentor-caddy
+    restart: unless-stopped
+    ports:
+      - "80:80"
+      - "443:443"
+      - "443:443/udp"   # HTTP/3
+    volumes:
+      - ./Caddyfile:/etc/caddy/Caddyfile:ro
+      - caddy-data:/data        # 证书在这里，删掉会导致重新签发（有频率限制）
+      - caddy-config:/config
+      - caddy-logs:/var/log/caddy
+    environment:
+      ASTRA_DOMAIN: ${ASTRA_DOMAIN:?请在 .env 里填你的域名}
+      ASTRA_ACME_EMAIL: ${ASTRA_ACME_EMAIL:?请在 .env 里填证书通知邮箱}
+    depends_on:
+      astramentor:
+        condition: service_healthy
+    security_opt:
+      - no-new-privileges:true
+
+  astramentor:
+    image: ghcr.io/dann2333/astramentor-v1:latest
+    container_name: astramentor
+    restart: unless-stopped
+    # 刻意不写 ports：应用只在 compose 内部网络上可达，外网只能经过 Caddy。
+    # 写了 ports 就等于在防火墙上开了个绕过 HTTPS 的后门。
+    expose:
+      - "8000"
+    environment:
+      ASTRA_API_KEY: ${ASTRA_API_KEY:?请在 .env 里填模型密钥}
+
+      # ── 公网必须收紧的三项 ──────────────────────────────
+      # 在线 IDE 直接 subprocess 跑使用者提交的代码，没有沙箱：能读走
+      # 数据库、上传件和环境变量里的 API Key。公网一律关掉。
+      ASTRA_CODE_RUNNER_ENABLED: "false"
+      # 整站强制登录，不再有匿名访客空间
+      ASTRA_ALLOW_ANONYMOUS: "false"
+      # 同源部署本来不需要跨域；填成自己的域名，顺带把带凭证的跨域也关了
+      ASTRA_CORS_ORIGINS: "https://${ASTRA_DOMAIN}"
+
+      # 不想让任何人都能注册就改成 false，然后用
+      #   docker compose exec astramentor python -m services.bootstrap_admin <用户名>
+      # 在服务端建号
+      ASTRA_REGISTRATION_ENABLED: ${ASTRA_REGISTRATION_ENABLED:-true}
+
+      # 撞库防护：连续失败 5 次锁 30 分钟
+      ASTRA_AUTH_MAX_FAILED_ATTEMPTS: "5"
+      ASTRA_AUTH_LOCKOUT_MINUTES: "30"
+      # 令牌有效期收短一些（小时），默认是 168
+      ASTRA_AUTH_TOKEN_TTL_HOURS: ${ASTRA_AUTH_TOKEN_TTL_HOURS:-48}
+    volumes:
+      - astramentor-data:/data
+      # 课程索引要能重建（教材更新后前端会提示 stale）。用具名卷而不是
+      # 直接写镜像里的目录：Docker 会在卷为空时把镜像里那份已构建好的索引
+      # 拷进来，所以第一次启动就带着 5 门课的索引，之后重建也存得下。
+      - astramentor-indexes:/app/rag/indexes
+    # 根文件系统只读：应用只往 /data 和上面那个卷写。真被打穿了也落不下东西。
+    read_only: true
+    tmpfs:
+      # PDF 解析、jieba 分词缓存都用临时目录
+      - /tmp:size=256m,mode=1777
+      # 有些库会往 HOME 下的 cache 里写点东西，给它一块内存盘兜着，
+      # 免得只读根目录把它打成 500
+      - /home/astra/.cache:size=64m
+    security_opt:
+      - no-new-privileges:true
+    cap_drop:
+      - ALL
+    pids_limit: 256
+    mem_limit: 2g
+    healthcheck:
+      test: ["CMD", "curl", "-fsS", "http://127.0.0.1:8000/api/courses"]
+      interval: 30s
+      timeout: 5s
+      start_period: 30s
+      retries: 3
+
+volumes:
+  astramentor-data:
+  astramentor-indexes:
+  caddy-data:
+  caddy-config:
+  caddy-logs:

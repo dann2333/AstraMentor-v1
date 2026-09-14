@@ -244,6 +244,127 @@ docker compose up -d
 | `ASTRA_ALLOW_ANONYMOUS` | `true` | 设为 `false` 则强制全站登录 |
 | `ASTRA_WEB_SEARCH_ENABLED` | `true` | 关闭联网搜索 |
 
+### 开放到公网
+
+> ⚠️ **先读这段再往下做。** 这个项目带一个在线 IDE，会在容器里直接
+> `subprocess` 执行使用者提交的代码，**没有沙箱**。默认配置下开到公网，
+> 等于把一个远程代码执行接口挂在门口：任何人都能读走 SQLite 里的全部账号
+> 与密码散列、读 `/data/uploads`、从环境变量里拿走你的模型 API Key、扫你
+> 的内网。而且 `ASTRA_ALLOW_ANONYMOUS` 默认是 `true`，连登录都不需要。
+>
+> 下面这套配置把这几条都关了。**不要只加个反向代理就上线。**
+
+需要准备：一台有公网 IP 的机器、一个域名（A 记录已指向它）、开放 80/443。
+证书由 Caddy 自动申请和续期，不用管 certbot。
+
+```bash
+git clone https://github.com/dann2333/AstraMentor-v1.git
+cd AstraMentor-v1/deploy
+
+cp .env.public.example .env
+vi .env        # 填 ASTRA_DOMAIN / ASTRA_ACME_EMAIL / ASTRA_API_KEY
+
+docker compose -f docker-compose.public.yml up -d
+```
+
+打开 `https://你的域名`。看一眼状态和日志：
+
+```bash
+docker compose -f docker-compose.public.yml ps
+docker compose -f docker-compose.public.yml logs -f
+```
+
+#### 这套配置到底关了什么
+
+| 项 | 值 | 为什么 |
+| --- | --- | --- |
+| `ASTRA_CODE_RUNNER_ENABLED` | `false` | **最要紧的一条。** 关掉在线运行代码，`/api/run-code` 直接返回 403。前端 IDE 还能写、能保存，只是不能在服务器上跑 |
+| `ASTRA_ALLOW_ANONYMOUS` | `false` | 整站强制登录，没有匿名访客空间 |
+| `ASTRA_CORS_ORIGINS` | `https://你的域名` | 只允许自己的域名跨域，并顺带关掉带凭证的跨域请求 |
+| `ASTRA_AUTH_MAX_FAILED_ATTEMPTS` | `5` | 撞库连续失败 5 次就锁 |
+| `ASTRA_AUTH_LOCKOUT_MINUTES` | `30` | 锁 30 分钟 |
+| `ASTRA_AUTH_TOKEN_TTL_HOURS` | `48` | 令牌有效期从 7 天收到 2 天 |
+| 容器不映射端口 | 只有 Caddy 听 80/443 | 应用只在内部网络可达，没有绕过 HTTPS 的路径 |
+| `read_only: true` | 根文件系统只读 | 只有 `/data`、`/tmp` 和课程索引卷可写 |
+| `cap_drop: ALL` | 丢掉所有 capability | |
+| `pids_limit` / `mem_limit` | 256 / 2g | 单个请求打不满整台机器 |
+
+HTTPS 头（HSTS、`X-Frame-Options`、CSP `frame-ancestors 'none'`）和登录接口
+限速在 `deploy/Caddyfile` 里。
+
+#### 只给自己用：关掉自助注册
+
+默认任何人都能注册。要改成只有你指定的账号能用：
+
+```bash
+# 1. 在 deploy/.env 里加一行
+echo 'ASTRA_REGISTRATION_ENABLED=false' >> .env
+docker compose -f docker-compose.public.yml up -d
+
+# 2. 在服务端建号（会提示你输密码）
+docker compose -f docker-compose.public.yml exec astramentor \
+  python -m services.bootstrap_admin 你的用户名
+```
+
+之后 `/api/auth/register` 返回 403，已有账号照常登录。
+
+#### 防火墙
+
+只开必要的端口。应用端口（8000）**不要**对外开——它已经不映射到宿主机了。
+
+```bash
+# Ubuntu / Debian
+sudo ufw allow 22/tcp
+sudo ufw allow 80/tcp
+sudo ufw allow 443/tcp
+sudo ufw enable
+
+# CentOS / RHEL
+sudo firewall-cmd --permanent --add-service=http
+sudo firewall-cmd --permanent --add-service=https
+sudo firewall-cmd --reload
+```
+
+云服务器还要在厂商控制台的安全组里同样只放 22/80/443。
+
+#### 备份
+
+数据都在 `astramentor-data` 这个卷里（SQLite 库 + 上传的 PDF）：
+
+```bash
+docker run --rm \
+  -v astramentor-data:/data:ro \
+  -v "$PWD":/backup \
+  alpine tar czf /backup/astramentor-$(date +%F).tar.gz -C /data .
+```
+
+恢复：
+
+```bash
+docker compose -f docker-compose.public.yml down
+docker run --rm -v astramentor-data:/data -v "$PWD":/backup \
+  alpine sh -c 'rm -rf /data/* && tar xzf /backup/astramentor-2026-01-01.tar.gz -C /data'
+docker compose -f docker-compose.public.yml up -d
+```
+
+#### 升级
+
+```bash
+docker compose -f docker-compose.public.yml pull
+docker compose -f docker-compose.public.yml up -d
+```
+
+#### 如果确实需要在公网开着在线 IDE
+
+别直接把 `ASTRA_CODE_RUNNER_ENABLED` 打开。`CodeRunner` 只是 `subprocess`，
+没有任何隔离。要支持这个功能，得把代码执行挪出主容器：
+
+- 换成 gVisor（`runsc`）或 Kata 这类真沙箱运行时的独立容器，每次执行一起一销；
+- 或者接一个现成的在线判题 / 代码执行服务（Judge0、Piston 等）；
+- 并且给执行侧断网、限 CPU 与内存、限时。
+
+在那之前，公网部署请保持 `false`。
+
 ### 自己构建
 
 ```bash
