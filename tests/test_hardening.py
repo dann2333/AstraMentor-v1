@@ -30,7 +30,7 @@ from services.account_service import (
     UserNotFound,
     ValidationError as AccountValidationError,
 )
-from services.bootstrap_admin import promote
+from services.bootstrap_admin import ensure_admin, promote
 from services.assignment_service import AssignmentService, ClassroomArchived
 from services.classroom_service import (
     AlreadyEnrolled,
@@ -629,6 +629,40 @@ class AdminBootstrapTests(unittest.TestCase):
     def test_promoting_an_unknown_account_fails_loudly(self) -> None:
         with self.assertRaises(UserNotFound):
             promote("nobody", self.accounts)
+
+    def test_the_cli_can_create_the_first_admin_from_nothing(self) -> None:
+        """关掉自助注册的部署里，第一个账号也得能建出来。
+
+        之前这个命令只会提升已有账号，而 ASTRA_REGISTRATION_ENABLED=false
+        又把注册接口关了 —— 两边一夹，全新部署一个号都建不出来，文档却写着
+        可以用它建号。
+        """
+        self.assertIsNone(self.accounts.find_by_username("root2"))
+
+        user_id, created = ensure_admin("root2", "correct-horse-3", self.accounts)
+
+        self.assertTrue(created)
+        user = self.accounts.get_user(user_id)
+        self.assertTrue(user.is_admin)
+        # 建出来的账号必须能正常登录，否则等于没建
+        self.assertEqual(self.accounts.authenticate("root2", "correct-horse-3").id, user_id)
+
+    def test_the_cli_is_idempotent(self) -> None:
+        """重复跑不该报错，也不该新建第二个账号。"""
+        first, created = ensure_admin("root3", "correct-horse-4", self.accounts)
+        self.assertTrue(created)
+
+        again, created_again = ensure_admin("root3", "ignored-password", self.accounts)
+
+        self.assertEqual(again, first)
+        self.assertFalse(created_again)
+        # 密码没被第二次调用改掉
+        self.assertEqual(self.accounts.authenticate("root3", "correct-horse-4").id, first)
+
+    def test_creating_an_admin_still_enforces_password_rules(self) -> None:
+        with self.assertRaises(AccountValidationError):
+            ensure_admin("root4", "x", self.accounts)
+        self.assertIsNone(self.accounts.find_by_username("root4"))
 
     def test_the_reserved_guest_account_cannot_be_promoted(self) -> None:
         with self.assertRaises(SystemAccountProtected):

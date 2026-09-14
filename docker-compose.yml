@@ -30,9 +30,9 @@ services:
       # ── 想开到公网时建议打开的两项 ──────────────────────
       # 整站强制登录（默认 true，也就是允许匿名访客）
       ASTRA_ALLOW_ANONYMOUS: ${ASTRA_ALLOW_ANONYMOUS:-true}
-      # 关掉自助注册后，用
+      # 镜像里没有预置任何账号。第一个管理员用下面这条建（账号已存在就直接
+      # 提升，会问一次密码）；关掉自助注册后新账号也都走它：
       #   docker compose exec astramentor python -m services.bootstrap_admin <用户名>
-      # 在服务端建号
       ASTRA_REGISTRATION_ENABLED: ${ASTRA_REGISTRATION_ENABLED:-true}
 
       # 撞库防护

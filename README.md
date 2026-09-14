@@ -287,6 +287,51 @@ server {
 }
 ```
 
+#### 第一个管理员
+
+镜像里**没有预置任何账号**，也没有默认密码 —— 不留后门。角色有三种：
+`student`（默认）、`teacher`、`admin`。注册时只能选前两种，`admin` 只能由已有
+管理员授予，否则谁注册都能自封管理员。
+
+于是全新部署需要一条命令把第一个管理员引导出来（能跑这条命令就已经拥有服务器
+和数据库文件了，不构成新的攻击面）：
+
+```bash
+docker compose exec astramentor python -m services.bootstrap_admin 你的用户名
+```
+
+账号不存在就顺手建出来（问一次密码），已存在就直接提升，重复跑没有副作用。
+容器里 stdin 不是终端时会生成一个随机强密码并打印出来 —— 记得登录后改掉。
+
+自己本机跑（不走 Docker）是同一条：
+
+```bash
+python -m services.bootstrap_admin 你的用户名
+```
+
+日常其实用不到管理员：注册时就能自己选 `teacher`，老师建班、发作业、批改都
+不需要 admin。admin 只在需要改别人角色的时候用得上，目前**还没有管理界面**，
+走接口：
+
+```bash
+# 先拿自己的 token
+TOKEN=$(curl -fsS -X POST http://127.0.0.1:8000/api/auth/login \
+  -H 'Content-Type: application/json' \
+   -d '{"username":"你的用户名","password":"你的密码"}' | jq -r .access_token)
+
+# 列出账号，找到目标的 id
+curl -fsS http://127.0.0.1:8000/api/admin/users -H "Authorization: Bearer $TOKEN"
+
+# 改角色（student / teacher / admin）
+curl -fsS -X PUT http://127.0.0.1:8000/api/admin/users/<id>/role \
+  -H "Authorization: Bearer $TOKEN" -H 'Content-Type: application/json' \
+  -d '{"role":"teacher"}'
+```
+
+> 默认 `ASTRA_ALLOW_ANONYMOUS=true`，也就是不登录也能用一个匿名访客空间，
+> 所以"先注册再提升"和"直接用这条命令建号"两条路都通。开到公网时建议把匿名
+> 关掉，见下一节。
+
 #### 开到公网前建议打开这两项
 
 ```bash
@@ -298,7 +343,7 @@ ASTRA_REGISTRATION_ENABLED=false
 ENV
 docker compose up -d
 
-# 关了注册之后在服务端建号（会提示输密码）
+# 关了注册之后，新账号都在服务端建（见上面「第一个管理员」）
 docker compose exec astramentor python -m services.bootstrap_admin 你的用户名
 ```
 

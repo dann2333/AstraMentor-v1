@@ -51,8 +51,8 @@ def register(
 ) -> TokenResponse:
     """Create an account and sign the caller in with a fresh token."""
     # 公开部署又不想让任何人都能建号时，设 ASTRA_REGISTRATION_ENABLED=false。
-    # 只挡注册，已有账号照常登录；管理员仍可用
-    # `python -m services.bootstrap_admin <用户名>` 在服务端建号。
+    # 只挡注册，已有账号照常登录；要新建账号就在服务端跑
+    # `python -m services.bootstrap_admin <用户名>`（它建出来的是管理员）。
     if not get_config().server.registration_enabled:
         raise HTTPException(
             status_code=403, detail="这个部署已关闭自助注册，请联系管理员开通账号。"
