@@ -62,9 +62,17 @@ services:
       - /home/astra/.cache:size=64m
 
     security_opt:
-      # 注意这里没有 seccomp=unconfined：沙箱用的是内核的非特权 user
-      # namespace，在 Docker 的默认 seccomp 策略下就能工作。
       - no-new-privileges:true
+      # 在线 IDE 的 bubblewrap 沙箱要建非特权 user namespace，而 Ubuntu
+      # 23.10 起宿主机默认禁止了它（kernel.apparmor_restrict_unprivileged_userns=1），
+      # 容器里就会看到 "bwrap: No permissions to create new namespace"。
+      # 这时服务会明确拒绝执行代码，不会裸跑，只是在线 IDE 用不了。
+      #
+      # 想用在线 IDE 就把下面这行的注释去掉。它只放开这一个容器的 AppArmor
+      # 限制，**不授予任何 capability**（cap_drop: ALL 仍然生效），比在宿主机
+      # 上全局 sysctl 影响面小。不需要在线 IDE 的话别动，设
+      # ASTRA_CODE_RUNNER_ENABLED=false 更干脆。
+      # - apparmor=unconfined
     cap_drop:
       - ALL
 

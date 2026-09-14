@@ -14,6 +14,13 @@
 应用装在同一个镜像里，不用起第二个容器、不用挂 docker socket（挂 socket
 等于把宿主机 root 交出去）、也不用 --privileged。
 
+代价是它依赖宿主机允许非特权 user namespace，而这在新发行版上默认是关的
+（Ubuntu 23.10 起 kernel.apparmor_restrict_unprivileged_userns=1，Docker 的
+docker-default 这个 AppArmor 配置下 bwrap 会报 "No permissions to create new
+namespace"）。那种环境下 probe() 会返回不可用，调用方必须拒绝执行；要启用
+得给这一个容器加 --security-opt apparmor=unconfined（仍然不授予 capability），
+见 README「宿主机策略这一关」。
+
 隔离掉的东西：
 
   网络    --unshare-net，沙箱里没有任何网络接口，连 DNS 都没有
@@ -201,9 +208,10 @@ def probe() -> tuple[bool, str]:
     hint = detail[-1] if detail else f"退出码 {done.returncode}"
     return False, (
         f"bubblewrap 无法建立命名空间：{hint}。"
-        "常见原因是内核禁用了非特权 user namespace "
-        "（sysctl kernel.unprivileged_userns_clone=1 可打开），"
-        "或者容器的 seccomp/AppArmor 策略挡住了 unshare。"
+        "最常见的原因是宿主机禁止了非特权 user namespace —— Ubuntu 23.10 起"
+        "默认如此（kernel.apparmor_restrict_unprivileged_userns=1）。"
+        "容器部署时给这一个容器加 --security-opt apparmor=unconfined 即可，"
+        "不需要任何 capability；详见 README「宿主机策略这一关」。"
     )
 
 

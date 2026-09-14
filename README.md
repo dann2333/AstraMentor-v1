@@ -364,11 +364,38 @@ docker compose pull && docker compose up -d
 
 两个设计上的要点：
 
-- **不需要任何额外权限。** bubblewrap 靠内核的非特权 user namespace 工作，
-  所以容器仍然可以 `cap_drop: ALL` + `read_only`，不用 `--privileged`，
-  也不用挂 docker socket（挂 socket 等于把宿主机 root 交出去）。
+- **不要 capability，也不要 docker socket。** bubblewrap 靠内核的非特权
+  user namespace 工作，不需要 `SYS_ADMIN`、不需要 `--privileged`、更不用挂
+  docker socket（挂 socket 等于把宿主机 root 交出去）。容器仍然是
+  `cap_drop: ALL` + `read_only`。
 - **失败就拒绝，不降级。** 沙箱探测不通时 `/api/run-code` 直接返回一句
   明确的拒绝，**不会**退回到裸 subprocess。启动日志第一屏会写清沙箱状态。
+
+### 宿主机策略这一关
+
+不需要 capability，但**需要宿主机允许非特权 user namespace**，而这一点在新
+发行版上默认是关着的：Ubuntu 23.10 起 `kernel.apparmor_restrict_unprivileged_userns=1`，
+于是容器里 `bwrap` 会直接报
+
+```
+bwrap: No permissions to create new namespace, likely because the kernel
+does not allow non-privileged user namespaces
+```
+
+这种情况下服务会拒绝执行代码（日志里写明原因），在线 IDE 用不了，但不会裸跑。
+两条路可选，**按影响面从小到大**：
+
+```bash
+# A. 只放开这一个容器的 AppArmor 限制（不授予任何 capability，推荐）
+#    docker-compose.yml 里把 security_opt 那一段的注释去掉即可
+docker run --security-opt apparmor=unconfined ...
+
+# B. 在宿主机上打开这个内核开关（影响整台机器上所有程序）
+sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0
+```
+
+哪个组合在当前架构上真的有效，由 CI 的「探明沙箱需要的最小权限」一步实测后
+写进作业摘要，不靠推断。完全不需要在线 IDE 的话，最省事的是直接关掉它。
 
 不需要这个功能就整个关掉：
 
@@ -381,9 +408,9 @@ docker compose up -d
 两个架构上真跑一遍：读 `/data`、读 `/app`、拿 API Key、联网、DNS、写沙箱
 根目录——逐条确认都被挡住，同时确认正常代码和六种语言都还能跑。
 
-> 沙箱依赖内核的非特权 user namespace。极少数环境（很老的内核、宿主机
-> 关掉了该特性、或者外层套了更严的 seccomp/AppArmor）里会用不了，这时
-> 服务会拒绝执行代码并在日志里说明原因，而不是不声不响地裸跑。
+> CI 里这一轮同时覆盖了两种结局：沙箱能用时逐条确认隔离成立；宿主机策略
+> 不允许非特权 user namespace 时，确认服务**什么都没执行**。判红的只有第三
+> 种情形 —— 代码跑起来了但隔离没生效。
 
 ---
 
