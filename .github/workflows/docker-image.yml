@@ -305,7 +305,11 @@ jobs:
       - name: 探明沙箱需要的最小权限（只报告，不判红）
         if: always()
         run: |
-          set -uo pipefail   # 刻意不用 -e：这一步的每种组合都允许失败
+          # GitHub 用 `bash -e` 启动 step，所以这里必须显式 set +e ——
+          # 写 `set -uo pipefail` 是关不掉命令行上那个 -e 的。这一步的每种
+          # 组合都允许失败，只负责报告，不该因为某一格红就把构建判红。
+          set +e
+          set -u
 
           echo "宿主对非特权 user namespace 的设置："
           for key in kernel.unprivileged_userns_clone kernel.apparmor_restrict_unprivileged_userns; do
@@ -316,11 +320,12 @@ jobs:
           # 走的是同一段代码，不另写一套。
           PROBE_PY='from services.sandbox import probe; ok, detail = probe(); print(("OK" if ok else "FAIL") + " " + detail)'
 
-          # 两个维度分开试：LSM 策略（apparmor / seccomp）和 capability。
-          # 上一轮只试了 LSM，六种组合里报错逐级后移，最后都停在
-          # "loopback: Failed RTM_NEWADDR: Operation not permitted" ——
-          # 给新 netns 配 lo 要 CAP_NET_ADMIN，而基线里带着 --cap-drop ALL。
-          # 所以这轮把 capability 也排进去。
+          # 两个维度交叉：LSM 策略（apparmor / seccomp）和 capability。
+          # 实测下来 capability 完全不是变量 —— NET_ADMIN、SYS_ADMIN、乃至
+          # --privileged 都停在同一处，所以 compose 里的 cap_drop: ALL 可以留
+          # 着。真正分档的是 seccomp（决定能不能建 userns）和 apparmor
+          # （决定能不能 mount）。留着这几格是为了在别的宿主上也能一眼看出
+          # 哪一项卡住了。
           HARD="--read-only --tmpfs /tmp:size=64m,mode=1777 --cap-drop ALL --security-opt no-new-privileges:true"
           UNCONF="--security-opt apparmor=unconfined --security-opt seccomp=unconfined"
 
@@ -329,7 +334,8 @@ jobs:
             label="$1"; shift
             flags="$1"
             # shellcheck disable=SC2086 - flags 需要被拆成多个参数
-            out=$(docker run --rm -w /app $flags astramentor:smoke python -c "$PROBE_PY" 2>&1 | tail -3 | tr '\n' ' ')
+            out=$(docker run --rm -w /app $flags astramentor:smoke python -c "$PROBE_PY" 2>&1)
+            out=$(printf '%s' "$out" | tail -3 | tr '\n' ' ')
             # 只保留 bwrap 自己那句，后面那段中文提示每行都一样，没有信息量
             brief=$(printf '%s' "$out" | sed 's/。最常见的原因.*//')
             case "$out" in
@@ -370,6 +376,7 @@ jobs:
           try "sysctl 放开 + compose 那套加固"      "$HARD"
           try "sysctl 放开 + 不加任何 flag"          ""
           try "sysctl 放开 + 加固 + apparmor"        "$HARD --security-opt apparmor=unconfined"
+          try "sysctl 放开 + 加固 + apparmor + seccomp" "$HARD $UNCONF"
 
           # 还原，免得影响后面的步骤
           sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=1 > /dev/null 2>&1 || true
@@ -381,9 +388,10 @@ jobs:
           bw() {
             label="$1"; shift
             out=$(docker run --rm $UNCONF astramentor:smoke \
-                    bwrap "$@" --ro-bind / / --proc /proc --dev /dev /bin/true 2>&1 \
-                  | tail -2 | tr '\n' ' ')
-            if [ -z "$out" ]; then
+                    bwrap "$@" --ro-bind / / --proc /proc --dev /dev /bin/true 2>&1)
+            rc=$?
+            out=$(printf '%s' "$out" | tail -2 | tr '\n' ' ')
+            if [ "$rc" = 0 ]; then
               printf '  ✅ %s\n' "$label"
               echo "| bwrap 直跑：$label | ✅ 可用 |" >> /tmp/perm.md
             else
