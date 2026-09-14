@@ -103,7 +103,8 @@ ENV PATH="/opt/venv/bin:$PATH" \
     ASTRA_DB_PATH=/data/astramentor.db \
     ASTRA_UPLOAD_ROOT=/data/uploads \
     ASTRA_HOST=0.0.0.0 \
-    ASTRA_PORT=8000
+    ASTRA_PORT=8000 \
+    ASTRA_SANDBOX_SCRATCH=/sandbox
 
 COPY --from=deps /opt/venv /opt/venv
 
@@ -123,8 +124,13 @@ COPY --from=web /web/dist ./frontend/dist
 
 # 以非 root 运行。/data 是挂载点，先建好并交给该用户，
 # 否则匿名卷会以 root 属主挂上来，写库直接 permission denied。
+# /sandbox 是在线 IDE 沙箱的工作目录。只读根文件系统下要给它挂一块 tmpfs，
+# 而且**必须带 exec** —— Docker 的 --tmpfs 默认是 noexec，那样编译型语言产出
+# 的二进制跑不了（bwrap: execvp /work/main: Permission denied）。单独给它一块，
+# /tmp 就可以继续保持 noexec。
 RUN useradd --create-home --uid 10001 astra \
-    && mkdir -p /data \
+    && mkdir -p /data /sandbox \
+    && chmod 1777 /sandbox \
     && chown -R astra:astra /data /app
 USER astra
 

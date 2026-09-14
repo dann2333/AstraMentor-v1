@@ -15,6 +15,7 @@ from tempfile import TemporaryDirectory
 
 from services.sandbox import (
     DEFAULT_TIMEOUT,
+    SCRATCH_DIR,
     WORKDIR,
     SandboxResult,
     SandboxUnavailable,
@@ -94,7 +95,9 @@ class CodeRunner:
             }
 
         try:
-            with TemporaryDirectory(prefix="astra-run-") as tmp:
+            # dir=SCRATCH_DIR：容器里指向一块带 exec 的 tmpfs，
+            # 否则编译出来的二进制跑不了（详见 sandbox.SCRATCH_DIR）
+            with TemporaryDirectory(prefix="astra-run-", dir=SCRATCH_DIR) as tmp:
                 work = Path(tmp)
                 # 沙箱里 TMPDIR 指向 /work/tmp，得先建出来
                 (work / "tmp").mkdir(exist_ok=True)

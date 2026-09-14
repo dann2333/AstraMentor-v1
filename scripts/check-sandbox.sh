@@ -34,7 +34,9 @@ docker image inspect "$IMAGE" > /dev/null 2>&1 || {
 PROBE_PY='from services.sandbox import probe; ok, d = probe(); print(("OK" if ok else "FAIL") + " " + d)'
 
 # compose 里那套加固参数，作为固定基线
-HARD="--read-only --tmpfs /tmp:size=64m,mode=1777 --cap-drop ALL --security-opt no-new-privileges:true"
+# 注意 /sandbox 那块必须带 exec：Docker 的 tmpfs 默认 noexec，那样编译型
+# 语言产出的二进制跑不了（bwrap: execvp /work/main: Permission denied）。
+HARD="--read-only --tmpfs /tmp:size=64m,mode=1777 --tmpfs /sandbox:size=64m,mode=1777,exec --cap-drop ALL --security-opt no-new-privileges:true"
 
 WINNER=""
 WINNER_YAML=""

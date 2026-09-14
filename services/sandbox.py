@@ -58,6 +58,17 @@ BWRAP = shutil.which("bwrap") or "/usr/bin/bwrap"
 #: 沙箱里工作目录的挂载点
 WORKDIR = "/work"
 
+#: 宿主侧放沙箱工作目录的地方（挂到沙箱的 /work）。
+#:
+#: 这块盘**必须允许执行**。Docker 的 --tmpfs 默认带 noexec，所以如果工作目录
+#: 落在那样一块 /tmp 上，C/C++/Go 编译出来的二进制会得到一句
+#: `bwrap: execvp /work/main: Permission denied` —— 解释器语言照常，编译型
+#: 语言全废，而且报错完全看不出是挂载选项的事。
+#:
+#: 镜像里指向 /sandbox，compose 给它单独挂一块带 exec 的 tmpfs；这样 /tmp
+#: 可以继续保持 noexec，只有沙箱这一块是可执行的。留空则用系统默认临时目录。
+SCRATCH_DIR = os.getenv("ASTRA_SANDBOX_SCRATCH") or None
+
 #: 单次执行的墙钟上限（秒）。编译型语言要算上编译时间。
 DEFAULT_TIMEOUT = 10
 
@@ -190,8 +201,19 @@ def probe() -> tuple[bool, str]:
             "自建镜像请安装 bubblewrap 包。"
         )
 
-    with tempfile.TemporaryDirectory() as probe_dir:
-        argv = _base_argv(probe_dir) + ["--setenv", "PATH", "/usr/bin:/bin", "/bin/true"]
+    # 探测也用真正的工作目录，否则"能不能执行"这一项探不出来
+    with tempfile.TemporaryDirectory(dir=SCRATCH_DIR) as probe_dir:
+        # 往工作目录里放一个可执行文件并在沙箱里跑它。只跑 /bin/true 的话，
+        # 工作目录挂了 noexec 这种情形探不出来 —— 那时解释器语言一切正常，
+        # 编译型语言全部报 execvp Permission denied。
+        canary = Path(probe_dir) / "canary.sh"
+        canary.write_text("#!/bin/sh\nexit 0\n", encoding="utf-8")
+        canary.chmod(0o755)
+
+        argv = _base_argv(probe_dir) + [
+            "--setenv", "PATH", "/usr/bin:/bin",
+            f"{WORKDIR}/canary.sh",
+        ]
         try:
             done = subprocess.run(
                 argv,
@@ -205,6 +227,13 @@ def probe() -> tuple[bool, str]:
 
     if done.returncode == 0:
         return True, "bubblewrap 可用"
+
+    if "Permission denied" in (done.stderr or "") and "canary.sh" in (done.stderr or ""):
+        return False, (
+            f"沙箱的工作目录不允许执行（{SCRATCH_DIR or '系统临时目录'}）。"
+            "容器部署时这块盘通常是 tmpfs，而 Docker 的 --tmpfs 默认带 noexec，"
+            "要在挂载选项里显式加上 exec；详见 README「宿主机策略这一关」。"
+        )
 
     detail = (done.stderr or done.stdout or "").strip().splitlines()
     hint = detail[-1] if detail else f"退出码 {done.returncode}"

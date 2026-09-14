@@ -395,6 +395,11 @@ Ubuntu 24.04 runner 上的结果（`cap_drop: ALL` + 只读根全程保留）：
 - **每一档挡的是不同的东西**：`seccomp` 决定能不能建 user namespace，
   `apparmor` 决定能不能 mount，`systempaths` 是 Docker 给 `/proc` 做的
   masked paths，宿主 sysctl 决定新 namespace 里还剩多少权限。少任何一项都不行。
+- **沙箱的工作目录必须允许执行。** Docker 的 `--tmpfs` 默认带 `noexec`，工作
+  目录落在那样一块盘上时，解释器语言一切正常，而 C/C++/Go 全部报
+  `bwrap: execvp /work/main: Permission denied` —— 完全看不出是挂载选项的事。
+  所以镜像把工作目录放在单独的 `/sandbox`（`ASTRA_SANDBOX_SCRATCH`），
+  `docker-compose.yml` 给它挂一块 `exec` 的 tmpfs，`/tmp` 则继续保持 `noexec`。
 - 沙箱起不来的期间，`/api/run-code` 一直是明确拒绝执行，不会裸跑。
 
 #### 要开在线 IDE

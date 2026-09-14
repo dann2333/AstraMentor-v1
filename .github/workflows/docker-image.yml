@@ -237,6 +237,7 @@ jobs:
           docker run -d --name hardened -p 18001:8000 \
             --read-only \
             --tmpfs /tmp:size=512m,mode=1777 \
+            --tmpfs /sandbox:size=512m,mode=1777,exec \
             --tmpfs /home/astra/.cache:size=64m \
             --cap-drop ALL \
             --security-opt no-new-privileges:true \
@@ -319,7 +320,7 @@ jobs:
           # 抄进 compose。capability 已经实测过完全不是变量（NET_ADMIN、
           # SYS_ADMIN、乃至 --privileged 都停在同一处），所以 cap_drop: ALL
           # 全程保留，只沿着 LSM 策略这条线一档一档往上放。
-          HARD="--read-only --tmpfs /tmp:size=64m,mode=1777 --cap-drop ALL --security-opt no-new-privileges:true"
+          HARD="--read-only --tmpfs /tmp:size=64m,mode=1777 --tmpfs /sandbox:size=64m,mode=1777,exec --cap-drop ALL --security-opt no-new-privileges:true"
           S=" --security-opt seccomp=unconfined"
           A=" --security-opt apparmor=unconfined"
           P=" --security-opt systempaths=unconfined"
@@ -402,6 +403,7 @@ jobs:
           docker run -d --name sbx -p 18002:8000 \
             --read-only \
             --tmpfs /tmp:size=512m,mode=1777 \
+            --tmpfs /sandbox:size=512m,mode=1777,exec \
             --tmpfs /home/astra/.cache:size=64m \
             --cap-drop ALL \
             --security-opt no-new-privileges:true \

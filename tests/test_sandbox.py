@@ -171,6 +171,94 @@ class FailClosedTests(unittest.TestCase):
         self.assertNotIn("should not run", result["output"])
         self.assertIn("沙箱不可用", result["error"])
 
+    def test_probe_names_a_noexec_workdir(self) -> None:
+        """工作目录挂了 noexec 时，报错要直指挂载选项。
+
+        这个坑真在 CI 里踩到过：容器把 /tmp 挂成 Docker 默认的 tmpfs
+        （带 noexec），于是 Python / JS 一切正常，而 C/C++/Go 全部报
+        `bwrap: execvp /work/main: Permission denied` —— 从报错完全看不出
+        是挂载选项的事。probe() 现在会往工作目录里放一个可执行文件并真的
+        跑它，所以这种环境会在启动探测阶段就被认出来。
+        """
+        import subprocess as sp
+
+        fake = sp.CompletedProcess(
+            args=["bwrap"],
+            returncode=1,
+            stdout="",
+            stderr="bwrap: execvp /work/canary.sh: Permission denied\n",
+        )
+        original = sandbox.subprocess.run
+        sandbox.subprocess.run = lambda *a, **kw: fake  # type: ignore[assignment]
+        sandbox.probe.cache_clear()
+        try:
+            ok, detail = sandbox.probe()
+        finally:
+            sandbox.subprocess.run = original  # type: ignore[assignment]
+            sandbox.probe.cache_clear()
+
+        self.assertFalse(ok)
+        self.assertIn("不允许执行", detail)
+        self.assertIn("exec", detail)
+
+    def test_code_runner_uses_the_configured_scratch_dir(self) -> None:
+        """临时工作目录必须落在 SCRATCH_DIR 下。
+
+        镜像里 SCRATCH_DIR=/sandbox，compose 给它挂一块带 exec 的 tmpfs；
+        要是 code_runner 绕过这个设置去用系统临时目录，就又会落回那块
+        noexec 的 /tmp 上。
+        """
+        from services import code_runner
+
+        self.assertIs(code_runner.SCRATCH_DIR, sandbox.SCRATCH_DIR)
+
+        with TemporaryDirectory() as scratch:
+            seen: list[str | None] = []
+            original = code_runner.TemporaryDirectory
+
+            def spy(*args, **kwargs):  # type: ignore[no-untyped-def]
+                seen.append(kwargs.get("dir"))
+                return original(*args, **kwargs)
+
+            code_runner.TemporaryDirectory = spy  # type: ignore[assignment]
+            code_runner.SCRATCH_DIR = scratch  # type: ignore[assignment]
+            try:
+                CodeRunner.run_code("python", "print(1)")
+            finally:
+                code_runner.TemporaryDirectory = original  # type: ignore[assignment]
+                code_runner.SCRATCH_DIR = sandbox.SCRATCH_DIR  # type: ignore[assignment]
+
+            self.assertEqual(seen, [scratch])
+
+    def test_probe_reports_noexec_workdir(self) -> None:
+        """工作目录挂了 noexec 时，报错要说清是挂载选项的事。
+
+        这是 CI 上真踩到的一格：Docker 的 --tmpfs 默认带 noexec，工作目录落
+        在那样一块盘上时，解释器语言一切正常，而 C/C++/Go 全部报
+        `bwrap: execvp /work/main: Permission denied` —— 完全看不出是挂载
+        选项。所以 probe() 里放了个可执行的 canary，并把这种失败单独成句。
+        """
+        import subprocess as sp
+
+        class _Denied:
+            returncode = 1
+            stdout = ""
+            stderr = "bwrap: execvp /work/canary.sh: Permission denied\n"
+
+        original = sandbox.subprocess.run
+        sandbox.probe.cache_clear()
+        sandbox.subprocess.run = lambda *a, **k: _Denied()  # type: ignore[assignment]
+        try:
+            ok, detail = sandbox.probe()
+        finally:
+            sandbox.subprocess.run = original  # type: ignore[assignment]
+            sandbox.probe.cache_clear()
+
+        self.assertFalse(ok)
+        self.assertIn("不允许执行", detail)
+        self.assertIn("exec", detail)
+        del sp
+
     def test_unknown_language_is_rejected(self) -> None:
         result = CodeRunner.run_code("ruby", "puts 1")
         self.assertEqual(result["exit_code"], -1)
