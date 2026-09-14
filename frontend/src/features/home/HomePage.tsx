@@ -3,6 +3,8 @@ import { ArrowRight, FileUp, Route, History, Play, Trash2 } from 'lucide-react';
 import type { Course, CourseIndexRecovery } from '../../types';
 import type { GraphSession } from '../sidebar/HistorySidebar';
 import { CourseCatalog } from '../courses/CourseCatalog';
+import { GraphJobsPanel } from '../jobs/GraphJobsPanel';
+import type { TrackedJob } from '../jobs/useGraphJobs';
 
 interface HomePageProps {
   /** 头部右上角的账号入口，由 App 注入以复用同一份登录状态。 */
@@ -18,6 +20,10 @@ interface HomePageProps {
   /** 课程星图生成的实时进度，透传给 CourseCatalog 在卡片上展示 */
   generateProgress?: { step: string; message: string }[];
   generatingCourseId?: string;
+  /** 服务端的星图生成任务。刷新页面后还在，所以进度接得回来。 */
+  graphJobs?: TrackedJob[];
+  onOpenJob?: (jobId: string) => void;
+  onDismissJob?: (jobId: string) => void;
 }
 
 export default function HomePage({
@@ -32,6 +38,9 @@ export default function HomePage({
   onCourseRecoveryHandled,
   generateProgress = [],
   generatingCourseId = '',
+  graphJobs = [],
+  onOpenJob,
+  onDismissJob,
 }: HomePageProps) {
   return (
     <div className="astra-home">
@@ -75,6 +84,10 @@ export default function HomePage({
             <div className="hero-map__badge glass glass--thin glass--grain">A 0.62 / B 0.80</div>
           </div>
         </section>
+
+        {graphJobs.length > 0 && onOpenJob && onDismissJob && (
+          <GraphJobsPanel jobs={graphJobs} onOpen={onOpenJob} onDismiss={onDismissJob} />
+        )}
 
         <section className="course-section">
           <div className="course-section__heading">

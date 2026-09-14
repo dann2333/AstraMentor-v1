@@ -198,3 +198,43 @@ export interface TeachingResponse {
     total_steps?: number;
     is_plan_completed?: boolean;
 }
+
+// ── 星图生成任务 ─────────────────────────────────────────────────
+//
+// 生成从"一条长连接"改成了服务端任务：请求立刻返回 job_id，进度和模型的实时
+// 输出都往任务的事件流里追加，前端轮询。这样刷新页面能接回去，反代的读超时
+// 也不再能把生成掐掉。
+
+export type GraphJobStatus = 'running' | 'done' | 'failed';
+
+/** 事件流里的一条。kind 决定怎么渲染。 */
+export interface GraphJobEvent {
+    seq: number;
+    at: string;
+    /** progress=阶段标签 reasoning=模型思考 content=模型输出 error=失败原因 */
+    kind: 'progress' | 'reasoning' | 'content' | 'error';
+    text: string;
+    step: string;
+}
+
+export interface GraphJob {
+    job_id: string;
+    title: string;
+    mode: string;
+    course_id?: string | null;
+    course_title?: string | null;
+    status: GraphJobStatus;
+    step: string;
+    message: string;
+    error?: string | null;
+    created_at: string;
+    updated_at: string;
+    finished_at?: string | null;
+    /** 只有 since 之后的增量。列表接口里恒为空数组。 */
+    events: GraphJobEvent[];
+    last_seq: number;
+    /** 事件流太长时被丢掉的条数，如实报告而不是悄悄截断 */
+    dropped_events: number;
+    /** 仅 status === 'done' 且走单条接口时带上 */
+    graph?: GraphData;
+}

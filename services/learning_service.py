@@ -31,6 +31,16 @@ from rag.retriever import CourseRetriever, RetrievalResult
 logger = logging.getLogger(__name__)
 
 
+class GraphGenerationFailed(RuntimeError):
+    """星图生成失败，带着模型或网络给出的真实原因。
+
+    存在的理由：generate_knowledge_graph 出于历史原因把异常吞成 None，于是
+    调用方只能显示一句"生成失败，请重试"。而真实原因常常是重试不会好的那
+    一类 —— API Key 不对（401）、余额不足、端点写错。把原因原样带出来，
+    前端的任务列表才能显示成一句能照着查的话。
+    """
+
+
 class QuizContextError(ValueError):
     """The requested quiz no longer matches the completed lesson step."""
 
@@ -57,9 +67,15 @@ class LearningService:
         self.store = store or learning_store
         self.api_client = APIClient()
         self._progress_cb: Optional[Callable[[str, str], None]] = None
+        self._delta_cb: Optional[Callable[[str, str], None]] = None
+        # 生成失败时的真实原因。generate_knowledge_graph 出于历史原因把异常
+        # 吞成 None，调用方只能说一句"请重试" —— 而像 401 Key 不对这种，重试
+        # 一万次也不会好。把原因留在这里，任务就能如实报出来。
+        self.last_error: Optional[str] = None
         self.knowledge_graph = KnowledgeGraphAgent(
             api_client=self.api_client,
             progress_cb=lambda step, msg: self._emit_progress(step, msg),
+            delta_cb=lambda kind, text: self._emit_delta(kind, text),
         )
         self.teacher = TeacherAgent(api_client=self.api_client)
         self.evaluator = EvaluationAgent(api_client=self.api_client)
@@ -92,6 +108,60 @@ class LearningService:
             self._progress_cb(step, message)
         except Exception:  # 进度推送失败绝不能影响主流程
             logger.debug("progress callback failed", exc_info=True)
+
+    def _emit_delta(self, kind: str, text: str) -> None:
+        """把模型的实时增量转给调用方（kind: reasoning / content）。"""
+        if self._delta_cb is None:
+            return
+        try:
+            self._delta_cb(kind, text)
+        except Exception:  # 同上，显示用的旁路不能影响生成
+            logger.debug("delta callback failed", exc_info=True)
+
+    def run_generation(
+        self,
+        *,
+        mode: str,
+        on_progress: Callable[[str, str], None],
+        on_delta: Callable[[str, str], None],
+        topic: str = "",
+        learning_goal: str = "",
+        current_level: str = "零基础",
+        target_level: str = "掌握核心概念",
+        complexity: int = 2,
+        project_description: str = "",
+    ) -> Optional[Dict[str, Any]]:
+        """同步跑一次星图生成，进度与模型增量都通过回调交出去。
+
+        这是"任务"模式的入口：调用方（后台线程）自己决定把这些回调接到哪里。
+        和 stream_graph_generation 的区别只在于不自带线程和队列 —— 那条是给
+        SSE 用的，这条是给任务用的。
+        """
+        self._progress_cb = on_progress
+        self._delta_cb = on_delta
+        self.last_error = None
+        try:
+            if mode == "project":
+                graph = self.generate_project_graph(
+                    project_description=project_description,
+                    current_level=current_level,
+                    complexity=complexity,
+                )
+            else:
+                graph = self.generate_knowledge_graph(
+                    topic=topic,
+                    learning_goal=learning_goal,
+                    current_level=current_level,
+                    target_level=target_level,
+                    complexity=complexity,
+                )
+            if not graph and self.last_error:
+                # 把真实原因抛给任务层，别让它只能显示"请重试"。
+                raise GraphGenerationFailed(self.last_error)
+            return graph
+        finally:
+            self._progress_cb = None
+            self._delta_cb = None
 
     @staticmethod
     def _legacy_safe_topic(topic: str) -> str:
@@ -256,6 +326,7 @@ class LearningService:
             raise
         except Exception as e:
             logger.error(f"Failed to generate knowledge graph: {e}")
+            self.last_error = str(e)
             return None
 
     def generate_project_graph(
@@ -283,6 +354,7 @@ class LearningService:
             return graph_data
         except Exception as e:
             logger.error(f"Failed to generate project graph: {e}")
+            self.last_error = str(e)
             return None
 
     def save_graph(self, topic: str, graph_data: Dict[str, Any]) -> bool:

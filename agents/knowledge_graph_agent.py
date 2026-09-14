@@ -107,10 +107,15 @@ class KnowledgeGraphAgent:
         self,
         api_client: APIClient,
         progress_cb: Optional[Callable[[str, str], None]] = None,
+        delta_cb: Optional[Callable[[str, str], None]] = None,
     ):
         self.api_client = api_client
-        # NOTE: 进度回调由 LearningService 透传，仅 SSE 生成时非 None
+        # NOTE: 进度回调由 LearningService 透传，仅 SSE / 任务生成时非 None
         self._progress_cb = progress_cb
+        # NOTE: 模型增量回调，(kind, text)，kind 为 "reasoning" / "content"。
+        # 只有几条阶段标签的话，界面上几分钟毫无动静，跟卡死没法区分；把模型
+        # 真实的思考和输出透出去，用户才看得出它在动。
+        self._delta_cb = delta_cb
         logger.info("KnowledgeGraphAgent 初始化完成")
 
     def _emit_progress(self, step: str, message: str) -> None:
@@ -231,6 +236,7 @@ class KnowledgeGraphAgent:
                 system_instruction=system_instruction,
                 temperature=0.2,
                 output_schema=KnowledgeGraph,
+                on_delta=self._delta_cb,
             )
 
             graph_data = graph_model.model_dump()
@@ -298,6 +304,7 @@ class KnowledgeGraphAgent:
                 system_instruction=system_instruction,
                 temperature=0.2,
                 output_schema=KnowledgeGraph,
+                on_delta=self._delta_cb,
             )
 
             graph_data = graph_model.model_dump()

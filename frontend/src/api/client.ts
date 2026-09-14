@@ -1,5 +1,5 @@
 import axios from 'axios';
-import type { ChatMessage, GraphData, LearnerState, EvaluationResult, GroundingSource, TeachingResponse, CourseCitation, KnowledgeScope, SessionSnapshot, SessionSummary } from '../types';
+import type { ChatMessage, GraphData, GraphJob, LearnerState, EvaluationResult, GroundingSource, TeachingResponse, CourseCitation, KnowledgeScope, SessionSnapshot, SessionSummary } from '../types';
 import { ApiRequestError, toApiRequestError } from './errors';
 
 // 同源相对路径。写死 http://127.0.0.1:8000 的话，镜像一旦发布到别的主机或端口
@@ -79,6 +79,58 @@ export const api = {
             course_id: courseId,
         });
         return response.data;
+    },
+
+    // ── 星图生成任务 ──────────────────────────────────────────────
+    // 不走 SSE：那条长连接在模型静默期会被反代的读超时掐掉，而且刷新就没了。
+
+    createGraphJob: async (
+        topic: string,
+        goal: string,
+        currentLevel: string,
+        targetLevel: string,
+        complexity = 2,
+        courseId?: string,
+    ) => {
+        const response = await client.post<GraphJob>('/graph/jobs', {
+            topic,
+            learning_goal: goal,
+            current_level: currentLevel,
+            target_level: targetLevel,
+            complexity,
+            course_id: courseId,
+        });
+        return response.data;
+    },
+
+    createProjectGraphJob: async (
+        projectDescription: string,
+        currentLevel: string,
+        complexity = 2,
+    ) => {
+        const response = await client.post<GraphJob>('/graph/jobs/project', {
+            project_description: projectDescription,
+            current_level: currentLevel,
+            complexity,
+        });
+        return response.data;
+    },
+
+    listGraphJobs: async () => {
+        const response = await client.get<{ jobs: GraphJob[] }>('/graph/jobs');
+        return response.data.jobs;
+    },
+
+    /** since 传上次拿到的 last_seq，只回更新的事件，所以可以高频轮询。 */
+    getGraphJob: async (jobId: string, since = 0) => {
+        const response = await client.get<GraphJob>(`/graph/jobs/${jobId}`, {
+            params: { since },
+        });
+        return response.data;
+    },
+
+    dismissGraphJob: async (jobId: string) => {
+        await client.delete(`/graph/jobs/${jobId}`);
     },
 
     startLearning: async (topic: string, nodeName: string, description: string, userNote: string, current: number, target: number, projectDescription: string = '', courseId?: string) => {
