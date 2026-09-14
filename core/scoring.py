@@ -388,16 +388,18 @@ class ScoringEngine:
         Returns:
             评分等级描述
         """
+        # 不带 emoji、不带感叹号。学习者一天要看几十条反馈，每条都在为他鼓掌
+        # 反而没有信息量；这里只做一句判断，具体好在哪由后面的评语说。
         if score < 0.2:
-            return "🌱 还需努力"
+            return "差得比较多"
         elif score < 0.4:
-            return "💡 有所领悟"
+            return "沾到边了"
         elif score < 0.6:
-            return "📖 基本掌握"
+            return "大致对"
         elif score < 0.8:
-            return "💪 表现不错"
+            return "答得不错"
         else:
-            return "🌟 非常出色"
+            return "答得很好"
     
     def get_algorithm_explanation(self, result: ScoringResult) -> str:
         """

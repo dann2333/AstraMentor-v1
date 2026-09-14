@@ -18,6 +18,9 @@ orjson>=3.9.0
 # 测试框架
 pytest>=7.0.0
 
+# fastapi.testclient.TestClient 依赖 httpx，缺少时接口测试直接收集失败
+httpx>=0.27.0
+
 # Web Backend
 fastapi>=0.100.0
 uvicorn>=0.23.0

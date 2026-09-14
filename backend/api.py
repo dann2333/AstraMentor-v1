@@ -1,8 +1,10 @@
-from fastapi import APIRouter, HTTPException
+from fastapi import APIRouter, Depends, HTTPException
 from fastapi.responses import StreamingResponse
 import uuid
 from services.learning_service import LearningService, QuizContextError
+from services.learning_store import PayloadTooLarge
 from backend.course_runtime import course_runtime
+from backend.dependencies import get_owner_id
 from backend.models import (
     GenerateGraphRequest,
     StartLearningRequest,
@@ -103,12 +105,13 @@ def build_streaming_response(
 
 
 def get_service(
+    owner_id: str,
     topic: str = "",
     course_id: str | None = None,
     *,
     require_course_index: bool = False,
 ) -> LearningService:
-    """按 topic 创建 LearningService 实例，使学习状态按星图隔离"""
+    """按 (owner_id, topic, course_id) 创建实例，使学习状态按账号与星图隔离"""
     if course_id:
         try:
             course_runtime.registry.get(course_id)
@@ -119,25 +122,28 @@ def get_service(
             ) from exc
         if require_course_index:
             course_runtime.require_ready(course_id)
-    return LearningService(topic=topic, course_id=course_id or "")
-
-
-def load_graph_data(topic: str, course_id: str | None = None) -> dict | None:
-    """从磁盘加载星图图谱数据，用于提取前置知识上下文"""
-    if not topic:
-        return None
-    return get_service(topic, course_id).load_graph(topic)
+    return LearningService(
+        topic=topic, course_id=course_id or "", owner_id=owner_id
+    )
 
 
 @router.post("/run-code", response_model=RunCodeResponse)
-async def run_code(request: RunCodeRequest):
+async def run_code(
+    request: RunCodeRequest,
+    _owner_id: str = Depends(get_owner_id),
+):
+    # NOTE: 代码执行不写任何数据，这里挂 get_owner_id 只为继承同一套准入规则：
+    # ASTRA_ALLOW_ANONYMOUS=false 时它也必须登录才能调用。
     result = CodeRunner.run_code(request.language, request.code)
     return RunCodeResponse(**result)
 
 @router.post("/graph/generate")
-async def generate_graph(request: GenerateGraphRequest):
+async def generate_graph(
+    request: GenerateGraphRequest,
+    owner_id: str = Depends(get_owner_id),
+):
     service = get_service(
-        request.topic, request.course_id, require_course_index=True
+        owner_id, request.topic, request.course_id, require_course_index=True
     )
     graph = service.generate_knowledge_graph(
         topic=request.topic,
@@ -151,22 +157,32 @@ async def generate_graph(request: GenerateGraphRequest):
     return graph
 
 @router.post("/graph/save")
-async def save_graph(request: SaveGraphRequest):
-    service = get_service(request.topic, request.course_id)
-    success = service.save_graph(topic=request.topic, graph_data=request.graph_data)
+async def save_graph(
+    request: SaveGraphRequest,
+    owner_id: str = Depends(get_owner_id),
+):
+    service = get_service(owner_id, request.topic, request.course_id)
+    try:
+        success = service.save_graph(topic=request.topic, graph_data=request.graph_data)
+    except PayloadTooLarge as exc:
+        raise HTTPException(status_code=413, detail=str(exc)) from exc
     if not success:
         raise HTTPException(status_code=500, detail="Failed to save graph")
     return {"status": "success"}
 
 @router.delete("/graph/delete")
-async def delete_graph(topic: str, course_id: str | None = None):
-    """删除星图对应的图谱文件和学习状态文件"""
-    service = get_service(topic, course_id)
+async def delete_graph(
+    topic: str,
+    course_id: str | None = None,
+    owner_id: str = Depends(get_owner_id),
+):
+    """删除当前账号下该星图的图谱数据与学习状态"""
+    service = get_service(owner_id, topic, course_id)
     service.delete_graph(topic=topic)
     return {"status": "success"}
 
 @router.post("/graph/expand")
-async def expand_graph(request: AddNodeRequest):
+async def expand_graph(request: AddNodeRequest, owner_id: str = Depends(get_owner_id)):
     """
     在已有图谱上扩展新知识节点
 
@@ -174,7 +190,7 @@ async def expand_graph(request: AddNodeRequest):
     合并后的完整图谱会同步持久化到磁盘。
     """
     service = get_service(
-        request.topic, request.course_id, require_course_index=True
+        owner_id, request.topic, request.course_id, require_course_index=True
     )
     try:
         merged_graph = service.expand_graph(
@@ -194,9 +210,12 @@ async def expand_graph(request: AddNodeRequest):
         ) from e
 
 @router.post("/graph/generate-project")
-async def generate_project_graph(request: GenerateProjectGraphRequest):
+async def generate_project_graph(
+    request: GenerateProjectGraphRequest,
+    owner_id: str = Depends(get_owner_id),
+):
     """根据项目描述生成技能学习路径星图"""
-    service = get_service(request.project_description[:50])
+    service = get_service(owner_id, request.project_description[:50])
     graph = service.generate_project_graph(
         project_description=request.project_description,
         current_level=request.current_level,
@@ -207,14 +226,17 @@ async def generate_project_graph(request: GenerateProjectGraphRequest):
     return graph
 
 @router.get("/state")
-async def get_state():
-    service = get_service()
+async def get_state(owner_id: str = Depends(get_owner_id)):
+    service = get_service(owner_id)
     return service.get_learner_state_summary()
 
 @router.post("/learning/start")
-async def start_learning(request: StartLearningRequest):
+async def start_learning(
+    request: StartLearningRequest,
+    owner_id: str = Depends(get_owner_id),
+):
     service = get_service(
-        request.topic, request.course_id, require_course_index=True
+        owner_id, request.topic, request.course_id, require_course_index=True
     )
     # NOTE: 加载图谱数据，使教学计划生成时能考虑前置知识
     graph_data = service.load_graph(request.topic)
@@ -234,9 +256,12 @@ async def start_learning(request: StartLearningRequest):
     )
 
 @router.post("/learning/lesson")
-async def start_lesson(request: StartLearningRequest):
+async def start_lesson(
+    request: StartLearningRequest,
+    owner_id: str = Depends(get_owner_id),
+):
     service = get_service(
-        request.topic, request.course_id, require_course_index=True
+        owner_id, request.topic, request.course_id, require_course_index=True
     )
     kp = service.get_knowledge_point(request.node_name)
     if not kp:
@@ -260,9 +285,12 @@ async def start_lesson(request: StartLearningRequest):
 
 
 @router.post("/learning/lesson/stream")
-async def start_lesson_stream(request: StartLearningRequest):
+async def start_lesson_stream(
+    request: StartLearningRequest,
+    owner_id: str = Depends(get_owner_id),
+):
     service = get_service(
-        request.topic, request.course_id, require_course_index=True
+        owner_id, request.topic, request.course_id, require_course_index=True
     )
     kp = service.get_knowledge_point(request.node_name)
     if not kp:
@@ -275,10 +303,13 @@ async def start_lesson_stream(request: StartLearningRequest):
     )
 
 @router.post("/learning/next-step")
-async def next_step(request: StartLearningRequest):
+async def next_step(
+    request: StartLearningRequest,
+    owner_id: str = Depends(get_owner_id),
+):
     """推进到下一个教学步骤并自动讲解"""
     service = get_service(
-        request.topic, request.course_id, require_course_index=True
+        owner_id, request.topic, request.course_id, require_course_index=True
     )
     kp = service.get_knowledge_point(request.node_name)
     if not kp:
@@ -301,9 +332,12 @@ async def next_step(request: StartLearningRequest):
 
 
 @router.post("/learning/next-step/stream")
-async def next_step_stream(request: StartLearningRequest):
+async def next_step_stream(
+    request: StartLearningRequest,
+    owner_id: str = Depends(get_owner_id),
+):
     service = get_service(
-        request.topic, request.course_id, require_course_index=True
+        owner_id, request.topic, request.course_id, require_course_index=True
     )
     kp = service.get_knowledge_point(request.node_name)
     if not kp:
@@ -335,10 +369,10 @@ async def next_step_stream(request: StartLearningRequest):
     )
 
 @router.post("/learning/reteach")
-async def reteach(request: ReteachRequest):
+async def reteach(request: ReteachRequest, owner_id: str = Depends(get_owner_id)):
     """根据错误分析重新讲解当前步骤"""
     service = get_service(
-        request.topic, request.course_id, require_course_index=True
+        owner_id, request.topic, request.course_id, require_course_index=True
     )
     kp = service.get_knowledge_point(request.node_name)
     if not kp:
@@ -362,9 +396,12 @@ async def reteach(request: ReteachRequest):
 
 
 @router.post("/learning/reteach/stream")
-async def reteach_stream(request: ReteachRequest):
+async def reteach_stream(
+    request: ReteachRequest,
+    owner_id: str = Depends(get_owner_id),
+):
     service = get_service(
-        request.topic, request.course_id, require_course_index=True
+        owner_id, request.topic, request.course_id, require_course_index=True
     )
     kp = service.get_knowledge_point(request.node_name)
     if not kp:
@@ -379,8 +416,11 @@ async def reteach_stream(request: ReteachRequest):
     )
 
 @router.post("/learning/update")
-async def update_learning(request: UpdateNodeRequest):
-    service = get_service(request.topic, request.course_id)
+async def update_learning(
+    request: UpdateNodeRequest,
+    owner_id: str = Depends(get_owner_id),
+):
+    service = get_service(owner_id, request.topic, request.course_id)
     service.update_knowledge_point(
         node_name=request.node_name,
         user_note=request.user_note,
@@ -390,9 +430,9 @@ async def update_learning(request: UpdateNodeRequest):
     return {"status": "success", "message": "Knowledge point updated"}
 
 @router.post("/learning/chat")
-async def chat(request: ChatRequest):
+async def chat(request: ChatRequest, owner_id: str = Depends(get_owner_id)):
     service = get_service(
-        request.topic, request.course_id, require_course_index=True
+        owner_id, request.topic, request.course_id, require_course_index=True
     )
     kp = service.get_knowledge_point(request.node_name)
     if not kp:
@@ -416,9 +456,9 @@ async def chat(request: ChatRequest):
 
 
 @router.post("/learning/chat/stream")
-async def chat_stream(request: ChatRequest):
+async def chat_stream(request: ChatRequest, owner_id: str = Depends(get_owner_id)):
     service = get_service(
-        request.topic, request.course_id, require_course_index=True
+        owner_id, request.topic, request.course_id, require_course_index=True
     )
     kp = service.get_knowledge_point(request.node_name)
     if not kp:
@@ -438,9 +478,12 @@ async def chat_stream(request: ChatRequest):
     )
 
 @router.post("/learning/question")
-async def generate_question(request: StartLearningRequest):
+async def generate_question(
+    request: StartLearningRequest,
+    owner_id: str = Depends(get_owner_id),
+):
     service = get_service(
-        request.topic, request.course_id, require_course_index=True
+        owner_id, request.topic, request.course_id, require_course_index=True
     )
     kp = service.get_knowledge_point(request.node_name)
     if not kp:
@@ -457,9 +500,9 @@ async def generate_question(request: StartLearningRequest):
     }
 
 @router.post("/learning/evaluate")
-async def evaluate(request: EvaluateRequest):
+async def evaluate(request: EvaluateRequest, owner_id: str = Depends(get_owner_id)):
     service = get_service(
-        request.topic, request.course_id, require_course_index=True
+        owner_id, request.topic, request.course_id, require_course_index=True
     )
     kp = service.get_knowledge_point(request.node_name)
     if not kp:

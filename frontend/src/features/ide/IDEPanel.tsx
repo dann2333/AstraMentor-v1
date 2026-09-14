@@ -20,19 +20,19 @@ export function IDEPanel({ initialCode = "", initialLanguage = "python" }: IDEPa
     const handleRun = async () => {
         if (!code.trim()) return;
         setIsRunning(true);
-        setOutput("Running...");
+        setOutput("运行中…");
         
         try {
             const result = await api.runCode(code, language);
             if (result.error) {
                 setOutput(`Error:\n${result.error}`);
             } else {
-                setOutput(result.output || "No output");
+                setOutput(result.output || "（没有输出）");
             }
         } catch (error) {
             console.error(error);
-            toast.error("Failed to run code");
-            setOutput("System Error");
+            toast.error("代码没跑起来");
+            setOutput("运行环境出错了");
         } finally {
             setIsRunning(false);
         }
@@ -45,7 +45,7 @@ export function IDEPanel({ initialCode = "", initialLanguage = "python" }: IDEPa
                 <div className="flex items-center gap-2">
                     <Select value={language} onValueChange={setLanguage}>
                         <SelectTrigger className="w-[120px] h-8 text-xs">
-                            <SelectValue placeholder="Language" />
+                            <SelectValue placeholder="语言" />
                         </SelectTrigger>
                         <SelectContent>
                             <SelectItem value="python">Python</SelectItem>
@@ -63,7 +63,7 @@ export function IDEPanel({ initialCode = "", initialLanguage = "python" }: IDEPa
                         variant="ghost" 
                         onClick={() => setCode("")}
                         className="h-8 w-8 p-0"
-                        title="Reset Code"
+                        title="恢复初始代码"
                     >
                         <RotateCcw className="h-4 w-4" />
                     </Button>
@@ -71,12 +71,12 @@ export function IDEPanel({ initialCode = "", initialLanguage = "python" }: IDEPa
                         size="sm" 
                         onClick={handleRun} 
                         disabled={isRunning}
-                        className="h-8 text-xs bg-green-600 hover:bg-green-700 text-white"
+                        className="h-8 text-xs"
                     >
-                        {isRunning ? "Running..." : (
+                        {isRunning ? "运行中…" : (
                             <>
                                 <Play className="w-3 h-3 mr-1.5" />
-                                Run Code
+                                运行
                             </>
                         )}
                     </Button> 
@@ -94,13 +94,13 @@ export function IDEPanel({ initialCode = "", initialLanguage = "python" }: IDEPa
             </div>
 
             {/* Console Output */}
-            <div className="h-[30%] border-t flex flex-col bg-slate-950 text-slate-50">
-                <div className="flex items-center gap-2 px-3 py-1.5 border-b border-slate-800 text-xs font-mono text-slate-400 bg-slate-900">
+            <div className="flex h-[30%] flex-col border-t border-foreground/10 bg-[#0b0a13] text-[#e9e2d2]">
+                <div className="flex items-center gap-2 border-b border-white/10 bg-[#141220] px-3 py-1.5 font-mono text-xs text-[#a99db8]">
                     <Terminal className="w-3 h-3" />
-                    <span>Console Output</span>
+                    <span>输出</span>
                 </div>
                 <div className="flex-1 p-3 font-mono text-sm overflow-auto whitespace-pre-wrap">
-                    {output || <span className="text-slate-600 italic">Ready to run...</span>}
+                    {output || <span className="italic text-[#6b6280]">还没运行</span>}
                 </div>
             </div>
         </div>

@@ -102,10 +102,10 @@ export function UploadDocDialog({
               relative flex flex-col items-center justify-center
               rounded-lg border-2 border-dashed p-8 transition-all cursor-pointer
               ${dragOver
-                ? 'border-blue-500 bg-blue-500/10'
+                ? 'border-primary bg-primary/10'
                 : selectedFile
-                  ? 'border-green-500 bg-green-500/5'
-                  : 'border-zinc-600 hover:border-zinc-400 hover:bg-zinc-800/50'
+                  ? 'border-success bg-success/10'
+                  : 'border-foreground/25 hover:border-foreground/45 hover:bg-foreground/5'
               }
               ${isProcessing ? 'pointer-events-none opacity-60' : ''}
             `}
@@ -125,25 +125,25 @@ export function UploadDocDialog({
 
             {selectedFile ? (
               <>
-                <CheckCircle2 className="h-10 w-10 text-green-500 mb-3" />
-                <div className="flex items-center gap-2 text-sm text-zinc-300">
+                <CheckCircle2 className="mb-3 h-10 w-10 text-success" />
+                <div className="flex items-center gap-2 text-sm text-foreground">
                   <FileText className="h-4 w-4" />
                   <span className="font-medium">{selectedFile.name}</span>
                 </div>
-                <p className="text-xs text-zinc-500 mt-1">
+                <p className="mt-1 text-xs text-muted-foreground">
                   {(selectedFile.size / 1024 / 1024).toFixed(2)} MB
                 </p>
-                <p className="text-xs text-zinc-500 mt-2">
+                <p className="mt-2 text-xs text-muted-foreground">
                   {t('doc.click_to_change')}
                 </p>
               </>
             ) : (
               <>
-                <Upload className="h-10 w-10 text-zinc-500 mb-3" />
-                <p className="text-sm text-zinc-400">
+                <Upload className="mb-3 h-10 w-10 text-muted-foreground" />
+                <p className="text-sm text-muted-foreground">
                   {t('doc.drop_hint')}
                 </p>
-                <p className="text-xs text-zinc-600 mt-1">
+                <p className="mt-1 text-xs text-muted-foreground">
                   {t('doc.file_limit')}
                 </p>
               </>
@@ -152,7 +152,7 @@ export function UploadDocDialog({
 
           {/* 知识深度滑块 */}
           <div className="grid grid-cols-4 items-center gap-4">
-            <label className="text-right text-sm font-medium text-zinc-300">
+            <label className="text-right text-sm font-medium text-foreground">
               {t('app.complexity_label')}
             </label>
             <div className="col-span-3 px-1">
@@ -170,7 +170,7 @@ export function UploadDocDialog({
           <Button
             onClick={handleSubmit}
             disabled={isProcessing || !selectedFile}
-            className="w-full bg-gradient-to-r from-purple-600 to-pink-600 text-white hover:from-purple-700 hover:to-pink-700"
+            className="w-full"
           >
             {isProcessing ? (
               <>

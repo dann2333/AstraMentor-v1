@@ -1,6 +1,6 @@
 import axios from 'axios';
 import type { ChatMessage, GraphData, LearnerState, EvaluationResult, GroundingSource, TeachingResponse, CourseCitation, KnowledgeScope, SessionSnapshot, SessionSummary } from '../types';
-import { toApiRequestError } from './errors';
+import { ApiRequestError, toApiRequestError } from './errors';
 
 export const API_BASE_URL = 'http://127.0.0.1:8000/api';
 
@@ -11,10 +11,51 @@ export const client = axios.create({
     },
 });
 
+// NOTE: 令牌统一在这里挂上，业务代码不需要自己拼 Authorization 头。
+// 读取方式由 auth 层通过 configureAuthBridge 注入，避免两个模块互相 import 形成循环。
+client.interceptors.request.use((config) => {
+    const token = readAccessToken();
+    if (token) {
+        config.headers.set?.('Authorization', `Bearer ${token}`);
+    }
+    return config;
+});
+
 client.interceptors.response.use(
     (response) => response,
-    (error: unknown) => Promise.reject(toApiRequestError(error)),
+    (error: unknown) => {
+        const apiError = toApiRequestError(error);
+        // 401 说明令牌已经失效（过期或被吊销）。清掉它，让 UI 立刻回到未登录状态，
+        // 而不是让用户以为自己还登录着、结果一直在写访客数据。
+        if (apiError instanceof ApiRequestError && apiError.status === 401) {
+            onUnauthorized();
+        }
+        return Promise.reject(apiError);
+    },
 );
+
+let readAccessToken: () => string | null = () => null;
+let onUnauthorized: () => void = () => {};
+
+/** 供 fetch 调用方复用同一份令牌（SSE 不经过 axios 拦截器）。 */
+export function authorizationHeader(): Record<string, string> {
+    const token = readAccessToken();
+    return token ? { Authorization: `Bearer ${token}` } : {};
+}
+
+/** fetch 调用方收到 401 时调用，走与 axios 拦截器同一条退出登录路径。 */
+export function notifyUnauthorized(): void {
+    onUnauthorized();
+}
+
+/** 由 auth 层注入，保持 client 对存储方式无感知。 */
+export function configureAuthBridge(options: {
+    readAccessToken: () => string | null;
+    onUnauthorized: () => void;
+}): void {
+    readAccessToken = options.readAccessToken;
+    onUnauthorized = options.onUnauthorized;
+}
 
 export const api = {
     getLearnerState: async () => {

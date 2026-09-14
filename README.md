@@ -116,6 +116,15 @@
 - **易于扩科**: 每门课程一个独立目录与配置文件，索引、检索和学习状态按 `course_id` 隔离
 
 
+### 🔐 账号体系与数据存储 (Accounts & Storage) [NEW]
+
+- **登录接口**: `POST /api/auth/register` 与 `POST /api/auth/login`，用户名或邮箱均可登录
+- **令牌鉴权**: 登录返回 Bearer 令牌，服务端只保存令牌的 SHA-256 摘要，泄库也无法重放
+- **密码安全**: PBKDF2-HMAC-SHA256（24 万次迭代）+ 随机盐，连续失败自动临时锁定账号
+- **账号管理**: 查看/修改资料、修改密码、查看与吊销登录会话、注销账号
+- **数据存储**: SQLite 单文件数据库，登录后学习快照按账号隔离存储，删号即级联清理
+
+
 ### ⚙️ 评分算法详解
 
 **双层评分机制（有教学计划时）：**
@@ -150,6 +159,9 @@ graph TD
         CourseAPI --> RAG[Course RAG Index / Retriever]
         RAG --> Service
         API --> DocAPI[Doc API Router]
+        API --> AuthAPI[Auth / Account API]
+        AuthAPI --> Accounts[Account Service]
+        Accounts <--> SQLite[(SQLite: users / tokens / user_sessions)]
         Service --> KA[Knowledge Agent]
         Service --> TA[Teacher Agent]
         Service --> EA[Evaluation Agent]
@@ -384,6 +396,61 @@ npm run dev
 
 ---
 
+## 🔐 账号与数据存储 API (Accounts & Storage API)
+
+首次启动后端时会自动创建 SQLite 数据库（默认 `user_data/astramentor.db`）并建表，无需手动初始化。
+登录成功后带上 `Authorization: Bearer <access_token>` 访问需要鉴权的接口。
+
+### 登录与账号管理
+
+| 方法 | 路径 | 鉴权 | 说明 |
+| --- | --- | --- | --- |
+| POST | `/api/auth/register` | 否 | 注册账号，成功后直接返回令牌（201） |
+| POST | `/api/auth/login` | 否 | 用户名或邮箱 + 密码登录，返回令牌 |
+| POST | `/api/auth/logout` | 是 | 吊销当前令牌 |
+| POST | `/api/auth/logout-all` | 是 | 吊销其它所有令牌，保留当前会话 |
+| GET | `/api/auth/me` | 是 | 获取当前账号资料 |
+| PATCH | `/api/auth/me` | 是 | 修改昵称 / 邮箱（`clear_email: true` 可清空邮箱） |
+| POST | `/api/auth/me/password` | 是 | 修改密码，成功后所有令牌失效 |
+| GET | `/api/auth/me/tokens` | 是 | 查看已签发的登录会话（不含令牌明文） |
+| DELETE | `/api/auth/me` | 是 | 密码二次确认后注销账号，级联删除全部数据 |
+
+### 账号维度的学习数据
+
+| 方法 | 路径 | 说明 |
+| --- | --- | --- |
+| GET | `/api/me/sessions` | 列出当前账号的学习快照摘要 |
+| GET | `/api/me/sessions/{session_id}` | 读取单个学习快照 |
+| PUT | `/api/me/sessions/{session_id}` | 保存/覆盖学习快照 |
+| DELETE | `/api/me/sessions/{session_id}` | 删除学习快照 |
+
+> 原有的匿名 `/api/sessions` 接口保持不变；`/api/me/sessions` 是登录后按账号隔离的存储，不同账号之间互不可见。
+
+```bash
+# 注册并拿到令牌
+curl -X POST http://127.0.0.1:8000/api/auth/register \
+  -H "Content-Type: application/json" \
+  -d '{"username":"alice","password":"password123","email":"alice@example.com"}'
+
+# 登录
+TOKEN=$(curl -s -X POST http://127.0.0.1:8000/api/auth/login \
+  -H "Content-Type: application/json" \
+  -d '{"username":"alice","password":"password123"}' | python -c "import sys,json;print(json.load(sys.stdin)['access_token'])")
+
+# 读取账号资料
+curl http://127.0.0.1:8000/api/auth/me -H "Authorization: Bearer $TOKEN"
+```
+
+### 安全说明
+
+- 密码使用 PBKDF2-HMAC-SHA256（240,000 次迭代）+ 16 字节随机盐存储，绝不落盘明文
+- 令牌为 `secrets.token_urlsafe(32)` 随机串，数据库仅保存其 SHA-256 摘要
+- 登录失败达到 `ASTRA_AUTH_MAX_FAILED_ATTEMPTS` 次后临时锁定，接口返回 429 与 `Retry-After`
+- 未知账号的登录请求同样执行一次等价的散列计算，避免通过响应耗时枚举用户名
+- 数据库文件位于已被 `.gitignore` 忽略的 `user_data/`，不会误提交
+
+---
+
 ## 📁 项目结构 (Directory Structure)
 
 ```
@@ -397,6 +464,9 @@ AstraMentor-v1/
 │   ├── course_api.py          # 课程目录、索引状态与检索 API
 │   ├── course_runtime.py      # 课程索引构建状态机与并发去重
 │   ├── session_api.py         # 历史学习快照 API
+│   ├── auth_api.py            # 登录、注册与账号管理 API [NEW]
+│   ├── user_data_api.py       # 账号维度的学习数据存储 API [NEW]
+│   ├── dependencies.py        # Bearer 令牌鉴权依赖 [NEW]
 │   ├── app.py                 # 应用入口与统一 409 恢复契约
 │   └── models.py              # Pydantic 数据模型
 ├── 📂 core/                    # 核心逻辑
@@ -410,6 +480,10 @@ AstraMentor-v1/
 │   ├── learning_service.py    # 教学计划管理、双层评分聚合
 │   ├── pdf_parser.py          # PDF 解析服务 [NEW]
 │   ├── session_repository.py  # 原子写入的学习会话仓库
+│   ├── database.py            # SQLite 连接、事务与建表迁移 [NEW]
+│   ├── security.py            # 密码散列与令牌生成 [NEW]
+│   ├── account_service.py     # 注册、登录、令牌与账号管理 [NEW]
+│   ├── user_data_repository.py# 账号维度的学习快照存储 [NEW]
 │   ├── streaming_service.py   # SSE 事件编码
 │   └── code_runner.py         # 代码沙箱执行
 ├── 📂 utils/                   # 工具模块

@@ -4,7 +4,7 @@ import { Button } from '../../components/ui/button';
 import { Input } from '../../components/ui/input';
 import type { ChatMessage, ChatOptions } from '../../types';
 import { ScrollArea } from '../../components/ui/scroll-area';
-import { Send, BookOpen, X, Paperclip, Globe, ExternalLink, BrainCircuit } from 'lucide-react';
+import { Send, BookOpen, X, Paperclip, Globe, ExternalLink, BrainCircuit, ArrowRight, CheckCircle2, RotateCcw, HelpCircle, GraduationCap } from 'lucide-react';
 import { useLanguage } from '../../contexts/LanguageContext';
 import { MarkdownContent } from '../../components/MarkdownContent';
 import { CourseCitationCard } from '../../components/CourseCitationCard';
@@ -94,18 +94,18 @@ const ChatInterface: React.FC<ChatInterfaceProps> = ({
 
   if (!currentNodeName) {
       return (
-          <Card className="flex flex-col h-full shadow-md rounded-lg overflow-hidden border-border bg-card">
-              <CardHeader className="border-b bg-muted/40 py-3">
+          <Card className="flex h-full flex-col overflow-hidden border-none bg-transparent shadow-none">
+              <CardHeader className="border-b border-foreground/10 py-3">
                   <CardTitle className="flex items-center gap-2 text-base font-medium">
                       <BookOpen className="w-5 h-5 text-primary" />
                       {t('chat.ai_tutor')}
                   </CardTitle>
               </CardHeader>
-              <CardContent className="flex-1 flex flex-col items-center justify-center p-6 text-center text-muted-foreground bg-slate-50/50">
+              <CardContent className="flex-1 flex flex-col items-center justify-center p-6 text-center text-muted-foreground">
                   <div className="mb-4">
-                        <BookOpen className="w-12 h-12 text-slate-800" strokeWidth={1.5} />
+                        <BookOpen className="w-12 h-12 text-foreground/35" strokeWidth={1.5} />
                   </div>
-                  <h3 className="text-lg font-semibold text-slate-700 mb-2">
+                  <h3 className="mb-2 text-lg font-semibold text-foreground">
                       {t('chat.waiting_for_topic')}
                   </h3>
                   <p className="max-w-xs text-sm">
@@ -141,7 +141,7 @@ const ChatInterface: React.FC<ChatInterfaceProps> = ({
                   className={`max-w-[85%] rounded-2xl px-4 py-3 shadow-sm overflow-hidden break-words ${
                     msg.role === 'user'
                       ? 'bg-primary text-primary-foreground rounded-tr-none'
-                      : 'bg-white/40 border border-white/20 text-foreground rounded-tl-none'
+                      : 'glass glass--thin glass--grain text-foreground rounded-tl-none'
                   }`}
                 >
                   <div className="prose prose-sm dark:prose-invert max-w-none break-words ai-content">
@@ -202,7 +202,7 @@ const ChatInterface: React.FC<ChatInterfaceProps> = ({
             ))}
              {isLoading && (
               <div className="flex justify-start">
-                <div className="bg-white/40 rounded-lg px-4 py-2 shadow-sm">
+                <div className="glass glass--thin glass--grain rounded-[var(--glass-radius-sm)] px-4 py-2">
                   <div className="flex gap-1">
                     <span className="w-2 h-2 bg-foreground/40 rounded-full animate-bounce [animation-delay:-0.3s]"></span>
                     <span className="w-2 h-2 bg-foreground/40 rounded-full animate-bounce [animation-delay:-0.15s]"></span>
@@ -217,9 +217,9 @@ const ChatInterface: React.FC<ChatInterfaceProps> = ({
                 <div className="flex justify-start animate-in fade-in slide-in-from-bottom-2 duration-300">
                      <Button 
                         onClick={onStartLesson} 
-                        className="bg-green-600 hover:bg-green-700 text-white shadow-sm flex items-center gap-2"
+                        className="flex items-center gap-2"
                     >
-                        <BookOpen className="w-4 h-4" />
+                        <GraduationCap className="w-4 h-4" />
                         {t('chat.start_lesson')}
                     </Button>
                 </div>
@@ -228,11 +228,11 @@ const ChatInterface: React.FC<ChatInterfaceProps> = ({
             {/* 步骤讲解完毕后：重新讲解 / 检测该步骤 */}
              {interactionState === 'step_taught' && !isLoading && (
                  <div className="flex justify-start animate-in fade-in slide-in-from-bottom-2 duration-300 gap-3 mt-2">
-                     <Button variant="outline" onClick={onReteachStep} className="border-amber-200 text-amber-600 hover:bg-amber-50 hover:text-amber-700">
-                         🔄 重新讲解该步骤
+                     <Button variant="outline" onClick={onReteachStep}>
+                         <RotateCcw className="w-4 h-4" /> 再讲一遍这步
                      </Button>
-                     <Button onClick={onStartQuiz} className="bg-blue-600 hover:bg-blue-700 text-white shadow-sm">
-                         ✅ 检测该步骤
+                     <Button onClick={onStartQuiz}>
+                         <CheckCircle2 className="w-4 h-4" /> 考一下这步
                      </Button>
                  </div>
              )}
@@ -240,11 +240,11 @@ const ChatInterface: React.FC<ChatInterfaceProps> = ({
              {/* 步骤验证评价后：针对错误重新讲解 / 下一步 */}
              {interactionState === 'step_evaluated' && !isLoading && (
                  <div className="flex justify-start animate-in fade-in slide-in-from-bottom-2 duration-300 gap-3 mt-2">
-                     <Button variant="outline" onClick={onReteachFromErrors} className="border-red-200 text-red-600 hover:bg-red-50 hover:text-red-700">
-                         🔄 针对错误重新讲解
+                     <Button variant="outline" onClick={onReteachFromErrors}>
+                         <RotateCcw className="w-4 h-4" /> 照着错的地方再讲
                      </Button>
-                     <Button onClick={onNextStep} className="bg-green-600 hover:bg-green-700 text-white shadow-sm">
-                         ➡️ {stepProgress && stepProgress.current + 1 >= stepProgress.total ? '完成学习' : '下一步'}
+                     <Button onClick={onNextStep}>
+                         {stepProgress && stepProgress.current + 1 >= stepProgress.total ? '学完这节' : '下一步'} <ArrowRight className="w-4 h-4" />
                      </Button>
                  </div>
              )}
@@ -255,15 +255,13 @@ const ChatInterface: React.FC<ChatInterfaceProps> = ({
                      <Button 
                          variant="outline"
                          onClick={onExplainAgain}
-                         className="border-red-200 text-red-600 hover:bg-red-50 hover:text-red-700"
                      >
-                         🤔 没明白，再讲一遍
+                         <HelpCircle className="w-4 h-4" /> 没太懂，再讲一遍
                      </Button>
                      <Button 
                          onClick={onStartQuiz}
-                         className="bg-blue-600 hover:bg-blue-700 text-white shadow-sm"
                      >
-                         ✅ 明白，开始检测
+                         <CheckCircle2 className="w-4 h-4" /> 懂了，来道题
                      </Button>
                  </div>
              )}

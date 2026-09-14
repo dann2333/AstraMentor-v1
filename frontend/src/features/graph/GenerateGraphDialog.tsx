@@ -119,14 +119,11 @@ export function GenerateGraphDialog({
         </DialogHeader>
 
         {/* ====== 模式切换 Tab ====== */}
-        <div className="flex gap-1 p-1 bg-zinc-100 rounded-lg">
+        <div className="segmented glass glass--thin glass--grain">
           <button
             onClick={() => setMode('topic')}
-            className={`flex-1 flex items-center justify-center gap-2 py-2 px-4 rounded-md text-sm font-medium transition-all ${
-              mode === 'topic'
-                ? 'bg-white shadow-sm text-blue-700'
-                : 'text-zinc-500 hover:text-zinc-700'
-            }`}
+            className="segmented__item"
+            data-active={mode === 'topic'}
             disabled={isProcessing}
           >
             <Sparkles className="h-4 w-4" />
@@ -134,11 +131,8 @@ export function GenerateGraphDialog({
           </button>
           <button
             onClick={() => setMode('project')}
-            className={`flex-1 flex items-center justify-center gap-2 py-2 px-4 rounded-md text-sm font-medium transition-all ${
-              mode === 'project'
-                ? 'bg-white shadow-sm text-emerald-700'
-                : 'text-zinc-500 hover:text-zinc-700'
-            }`}
+            className="segmented__item"
+            data-active={mode === 'project'}
             disabled={isProcessing}
           >
             <Rocket className="h-4 w-4" />
@@ -146,11 +140,8 @@ export function GenerateGraphDialog({
           </button>
           <button
             onClick={() => setMode('doc')}
-            className={`flex-1 flex items-center justify-center gap-2 py-2 px-4 rounded-md text-sm font-medium transition-all ${
-              mode === 'doc'
-                ? 'bg-white shadow-sm text-purple-700'
-                : 'text-zinc-500 hover:text-zinc-700'
-            }`}
+            className="segmented__item"
+            data-active={mode === 'doc'}
             disabled={isProcessing}
           >
             <FileUp className="h-4 w-4" />
@@ -183,10 +174,10 @@ export function GenerateGraphDialog({
                 relative flex flex-col items-center justify-center
                 rounded-lg border-2 border-dashed p-6 transition-all cursor-pointer
                 ${dragOver
-                  ? 'border-purple-500 bg-purple-500/10'
+                  ? 'border-primary bg-primary/10'
                   : selectedFile
-                    ? 'border-green-500 bg-green-500/5'
-                    : 'border-zinc-300 hover:border-zinc-400 hover:bg-zinc-50'
+                    ? 'border-success bg-success/10'
+                    : 'border-foreground/25 hover:border-foreground/45 hover:bg-foreground/5'
                 }
                 ${isProcessing ? 'pointer-events-none opacity-60' : ''}
               `}
@@ -205,20 +196,20 @@ export function GenerateGraphDialog({
               />
               {selectedFile ? (
                 <>
-                  <CheckCircle2 className="h-8 w-8 text-green-500 mb-2" />
-                  <div className="flex items-center gap-2 text-sm text-zinc-700">
+                  <CheckCircle2 className="mb-2 h-8 w-8 text-success" />
+                  <div className="flex items-center gap-2 text-sm text-foreground">
                     <FileText className="h-4 w-4" />
                     <span className="font-medium">{selectedFile.name}</span>
                   </div>
-                  <p className="text-xs text-zinc-400 mt-1">
+                  <p className="text-xs text-muted-foreground mt-1">
                     {(selectedFile.size / 1024 / 1024).toFixed(2)} MB · {t('doc.click_to_change')}
                   </p>
                 </>
               ) : (
                 <>
-                  <Upload className="h-8 w-8 text-zinc-400 mb-2" />
-                  <p className="text-sm text-zinc-500">{t('doc.drop_hint')}</p>
-                  <p className="text-xs text-zinc-400 mt-1">{t('doc.file_limit')}</p>
+                  <Upload className="h-8 w-8 mb-2 text-muted-foreground" />
+                  <p className="text-sm text-muted-foreground">{t('doc.drop_hint')}</p>
+                  <p className="text-xs text-muted-foreground mt-1">{t('doc.file_limit')}</p>
                 </>
               )}
             </div>
@@ -292,13 +283,7 @@ export function GenerateGraphDialog({
           <Button
             onClick={handleSubmit}
             disabled={!canSubmit}
-            className={`w-full text-white ${
-              mode === 'topic'
-                ? 'bg-gradient-to-r from-blue-600 to-cyan-600 hover:from-blue-700 hover:to-cyan-700'
-                : mode === 'project'
-                  ? 'bg-gradient-to-r from-emerald-600 to-teal-600 hover:from-emerald-700 hover:to-teal-700'
-                  : 'bg-gradient-to-r from-purple-600 to-pink-600 hover:from-purple-700 hover:to-pink-700'
-            }`}
+            className="w-full"
           >
             {isProcessing ? (
               <>

@@ -28,10 +28,19 @@ class APIClient:
     - zhipu：使用 OpenAI 兼容 SDK（智谱 GLM）
     """
 
+    # 类属性做默认值，这样即使有人绕过 __init__（测试里就用 __new__ 直接造壳）
+    # 拿到实例，这个开关也总是存在。真正被拒绝时写的是实例属性，不会串台。
+    _temperature_unsupported: bool = False
+
     def __init__(self, model_name: Optional[str] = None):
         config = get_config()
         self.provider = config.api.provider.lower()
         self.model_name = model_name or config.api.model_name
+
+        # 部分推理模型把 temperature 锁死为 1，第一次被拒后就不再传（见
+        # _create_completion）。放在实例上而不是模块级，是因为同一进程里
+        # 可能并存不同模型的客户端。
+        self._temperature_unsupported = False
 
         api_key = config.api.api_key or os.getenv("GEMINI_API_KEY") or os.getenv("ZHIPU_API_KEY") or os.getenv("DASHSCOPE_API_KEY")
         if not api_key:
@@ -79,6 +88,32 @@ class APIClient:
             base_url=base_url,
             timeout=120.0,
         )
+
+    # ─────────────────────────────────────────────
+    # OpenAI 兼容端点的统一入口
+    # ─────────────────────────────────────────────
+
+    def _create_completion(self, **kwargs: Any) -> Any:
+        """
+        调用 OpenAI 兼容的 chat.completions，并兜住"temperature 不可改"这一类模型。
+
+        Kimi K3、以及不少只做推理的模型，会把采样温度锁死，传任何自定义值都直接
+        400。上层 Agent 各自带着 temperature 调用，逐个改既啰嗦又容易漏，所以在
+        这里兜一次：第一次被拒就摘掉参数重试，并记在实例上，后续调用不再带。
+        """
+        if self._temperature_unsupported:
+            kwargs.pop("temperature", None)
+        try:
+            return self.client.chat.completions.create(**kwargs)
+        except Exception as exc:
+            if "temperature" not in kwargs or "temperature" not in str(exc).lower():
+                raise
+            logger.warning(
+                "模型 %s 不接受自定义 temperature，改用模型默认值重试", self.model_name
+            )
+            self._temperature_unsupported = True
+            kwargs.pop("temperature", None)
+            return self.client.chat.completions.create(**kwargs)
 
     # ─────────────────────────────────────────────
     # 公共接口 1：文本 / 多模态生成
@@ -205,13 +240,13 @@ class APIClient:
                 kwargs["extra_body"] = {"reasoning": {"enabled": True}}
 
             try:
-                resp = self.client.chat.completions.create(**kwargs)
+                resp = self._create_completion(**kwargs)
             except Exception:
                 if not thinking:
                     raise
                 logger.warning("当前兼容端点拒绝 Thinking 参数，已按普通模式重试")
                 kwargs.pop("extra_body", None)
-                resp = self.client.chat.completions.create(**kwargs)
+                resp = self._create_completion(**kwargs)
             return self._extract_zhipu_content(resp)
 
         except Exception as e:
@@ -364,7 +399,7 @@ class APIClient:
             kwargs["extra_body"] = {"reasoning": {"enabled": True}}
 
         try:
-            stream = self.client.chat.completions.create(**kwargs)
+            stream = self._create_completion(**kwargs)
         except Exception:
             if not thinking:
                 raise
@@ -373,7 +408,7 @@ class APIClient:
                 "type": "warning",
                 "message": "当前模型不支持 Thinking，已自动切换为普通回答",
             }
-            stream = self.client.chat.completions.create(**kwargs)
+            stream = self._create_completion(**kwargs)
 
         for chunk in stream:
             choices = getattr(chunk, "choices", None) or []
@@ -548,7 +583,7 @@ class APIClient:
                 "response_format": {"type": "json_object"},
             }
 
-            resp = self.client.chat.completions.create(**kwargs)
+            resp = self._create_completion(**kwargs)
             text = self._extract_zhipu_content(resp)
 
             if output_schema:
@@ -630,7 +665,7 @@ class APIClient:
                     "content": m.get("content", ""),
                 })
 
-            resp = self.client.chat.completions.create(
+            resp = self._create_completion(
                 model=self.model_name,
                 messages=api_messages,
                 temperature=temperature,
