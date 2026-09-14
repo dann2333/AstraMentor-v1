@@ -353,6 +353,28 @@ jobs:
           try "--privileged（仅作对照，不要照抄）"        "--privileged"
           echo "::endgroup::"
 
+          # 上面九种组合里 capability 完全不是变量（NET_ADMIN、SYS_ADMIN、
+          # 连 --privileged 都停在同一处），说明墙不在容器这一层，而在宿主的
+          # kernel.apparmor_restrict_unprivileged_userns 上。runner 有 sudo，
+          # 直接把它关掉再试一遍，看结论是否就是"这一项决定一切"。
+          echo "::group::把宿主 sysctl 放开后再试"
+          for key in kernel.apparmor_restrict_unprivileged_userns \
+                     kernel.apparmor_restrict_unprivileged_unconfined; do
+            before=$(sysctl -n "$key" 2>/dev/null || echo '不存在')
+            sudo sysctl -w "$key=0" > /dev/null 2>&1 \
+              && printf '  已置 0: %s（原值 %s）\n' "$key" "$before" \
+              || printf '  改不动: %s（原值 %s）\n' "$key" "$before"
+          done
+
+          echo "| **以下为放开宿主 sysctl 之后** | |" >> /tmp/perm.md
+          try "sysctl 放开 + compose 那套加固"      "$HARD"
+          try "sysctl 放开 + 不加任何 flag"          ""
+          try "sysctl 放开 + 加固 + apparmor"        "$HARD --security-opt apparmor=unconfined"
+
+          # 还原，免得影响后面的步骤
+          sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=1 > /dev/null 2>&1 || true
+          echo "::endgroup::"
+
           {
             echo "### 沙箱权限探测（${{ matrix.platform }}）"
             echo
