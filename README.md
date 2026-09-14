@@ -4,6 +4,7 @@
   <img src="https://img.shields.io/badge/React-18-61DAFB?style=for-the-badge&logo=react&logoColor=black" alt="React">
   <img src="https://img.shields.io/badge/TypeScript-5.0+-3178C6?style=for-the-badge&logo=typescript&logoColor=white" alt="TypeScript">
   <img src="https://img.shields.io/badge/Google_AI-Gemini-4285F4?style=for-the-badge&logo=google&logoColor=white" alt="Gemini">
+  <img src="https://img.shields.io/badge/Kimi-K3-000000?style=for-the-badge" alt="Kimi K3">
   <img src="https://img.shields.io/badge/智谱_AI-GLM--5-green?style=for-the-badge" alt="GLM">
   <img src="https://img.shields.io/badge/通义千问-Qwen3.5-orange?style=for-the-badge" alt="Qwen">
   <img src="https://img.shields.io/badge/License-AGPL%20v3-blue?style=for-the-badge" alt="License">
@@ -177,6 +178,7 @@ graph TD
         EA --> AC
         DGA --> AC
         AC -->|gemini| Gemini[Google Gemini]
+        AC -->|moonshot| Kimi[Kimi K3 / Moonshot]
         AC -->|zhipu| GLM[智谱 GLM]
         AC -->|qwen| Qwen[通义千问 Qwen]
         AC -->|其他| OAI[任意 OpenAI 兼容]
@@ -201,6 +203,7 @@ graph TD
 
   | 提供商 | 模型示例 | 获取方式 |
   |--------|----------|----------|
+  | Kimi (Moonshot AI) | `kimi-k3` | [Kimi 开放平台](https://platform.moonshot.cn/console/api-keys) |
   | Google Gemini | `gemini-2.5-flash` | [Google AI Studio](https://aistudio.google.com/) |
   | 智谱 AI (GLM) | `glm-5` | [智谱开放平台](https://open.bigmodel.cn/) |
   | 通义千问 (Qwen) | `qwen3.5-plus` | [阿里云百炼](https://dashscope.aliyun.com/) |
@@ -315,6 +318,13 @@ materials:
 #### 环境变量配置示例
 
 ```env
+# ========== 使用 Kimi K3 (Moonshot AI) ==========
+ASTRA_PROVIDER=moonshot
+ASTRA_API_KEY=your-kimi-key
+# 这里必须是 API 根地址，不要手动追加 /chat/completions
+ASTRA_API_ENDPOINT=https://api.moonshot.cn/v1
+ASTRA_MODEL_NAME=kimi-k3
+
 # ========== 使用 Gemini ==========
 ASTRA_PROVIDER=gemini
 ASTRA_API_KEY=your-gemini-key
@@ -342,6 +352,17 @@ ASTRA_MODEL_NAME=google/gemini-2.5-flash
 ```
 
 如果误把 OpenRouter Endpoint 写成 `.../api/v1/chat/completions`，新版客户端也会自动裁剪为根地址，避免 SDK 拼成两次 `/chat/completions`。API Key 不要截图、提交到 Git 或发给他人；一旦泄露请立即在提供商后台撤销并重建。
+
+#### 使用 Kimi K3 的特别说明
+
+- **解锁条件**：K3 是旗舰模型，需先在 [Kimi 开放平台](https://platform.moonshot.cn/) 充值（最低 10 元）后才能调用；新用户注册赠送的代金券**不可**用于 K3。
+- **Provider 填 `moonshot`**：Kimi 提供 OpenAI 兼容接口，`ASTRA_PROVIDER` 填 `moonshot` 即可，代码会自动走 OpenAI 兼容通道。
+- **已内置 K3 适配**：K3 始终开启思考模式且 `temperature` 等参数被锁定为固定值，本项目客户端已自动处理——
+  - 对 `moonshot` provider 不再显式传 `temperature`（避免 `invalid temperature` 报错）；
+  - 思考强度通过请求顶层 `reasoning_effort`（low/high）表达；
+  - 结构化输出（星图、教学计划等大段 JSON）自动改用**流式生成**拼接，规避 Kimi 网关约 2 分钟的单请求超时（504）。
+  - 客户端超时已加大、SDK 自动重试已关闭，避免长任务被误判断连后反复重试造成的"卡死"假象。
+- 以上适配仅在 `ASTRA_PROVIDER=moonshot`（或 `kimi`）时生效，切换其他 provider 不受影响。
 
 后端服务将在 `http://127.0.0.1:8000` 启动。
 

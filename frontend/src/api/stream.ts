@@ -1,5 +1,6 @@
 import { API_BASE_URL, authorizationHeader, notifyUnauthorized } from './client';
 import { ApiRequestError } from './errors';
+import type { GraphData } from '../types';
 
 export type StreamEventName =
   | 'meta'
@@ -8,6 +9,7 @@ export type StreamEventName =
   | 'warning'
   | 'citations'
   | 'sources'
+  | 'progress'
   | 'done'
   | 'error';
 
@@ -80,4 +82,43 @@ export async function streamLearning(
     if (done) break;
   }
   if (buffer.trim()) consumeFrame(buffer);
+}
+
+export interface GraphProgress {
+  step: string;
+  message: string;
+}
+
+/**
+ * 通过 SSE 生成星图并回报真实进度。
+ * onProgress 收到每个阶段回调；返回完成时的完整 GraphData。
+ */
+export async function generateGraphStream(
+  endpoint: string,
+  body: Record<string, unknown>,
+  onProgress: (p: GraphProgress) => void,
+  signal?: AbortSignal,
+): Promise<GraphData> {
+  let graph: GraphData | null = null;
+  let errorMessage = '';
+  await streamLearning(
+    endpoint,
+    body,
+    (ev) => {
+      if (ev.event === 'progress') {
+        onProgress({
+          step: String(ev.data.step ?? ''),
+          message: String(ev.data.message ?? ''),
+        });
+      } else if (ev.event === 'done') {
+        graph = (ev.data.graph as GraphData) ?? null;
+      } else if (ev.event === 'error') {
+        errorMessage = String(ev.data.message ?? '星图生成失败');
+      }
+    },
+    signal,
+  );
+  if (errorMessage) throw new Error(errorMessage);
+  if (!graph) throw new Error('未收到星图数据');
+  return graph;
 }

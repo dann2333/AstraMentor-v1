@@ -4,7 +4,7 @@ KnowledgeGraph Agent - 知识星图生成器
 """
 
 import logging
-from typing import Dict, Any, List
+from typing import Callable, Dict, Any, List, Optional
 
 from utils.api_client import APIClient
 from models.knowledge_graph import KnowledgeGraph, ExpandGraphResult
@@ -103,9 +103,23 @@ class KnowledgeGraphAgent:
         },
     }
 
-    def __init__(self, api_client: APIClient):
+    def __init__(
+        self,
+        api_client: APIClient,
+        progress_cb: Optional[Callable[[str, str], None]] = None,
+    ):
         self.api_client = api_client
+        # NOTE: 进度回调由 LearningService 透传，仅 SSE 生成时非 None
+        self._progress_cb = progress_cb
         logger.info("KnowledgeGraphAgent 初始化完成")
+
+    def _emit_progress(self, step: str, message: str) -> None:
+        if self._progress_cb is None:
+            return
+        try:
+            self._progress_cb(step, message)
+        except Exception:
+            logger.debug("progress callback failed", exc_info=True)
 
     def _build_system_instruction(self, complexity: int = 2) -> str:
         """
@@ -197,6 +211,7 @@ class KnowledgeGraphAgent:
             config = get_config()
             if config.api.web_search_enabled:
                 try:
+                    self._emit_progress("research", "正在联网搜索最新学习资料…")
                     research_context = build_research_context(
                         f"{topic} 学习路线 知识结构 核心概念", max_results=5
                     )
@@ -265,6 +280,7 @@ class KnowledgeGraphAgent:
             if config.api.web_search_enabled:
                 try:
                     # 提取项目关键词用于搜索
+                    self._emit_progress("research", "正在联网搜索项目相关技术栈…")
                     research_context = build_research_context(
                         f"{project_description} 技术栈 所需技能 学习路线",
                         max_results=5,

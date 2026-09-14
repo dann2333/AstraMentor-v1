@@ -1,13 +1,14 @@
 import { lazy, Suspense, useState, useEffect, useRef } from 'react';
 import { Toaster, toast } from 'sonner';
 import { api } from './api/client';
-import { streamLearning } from './api/stream';
+import { streamLearning, generateGraphStream, type GraphProgress } from './api/stream';
 import { getCourseIndexNotReadyDetail, readableApiError } from './api/errors';
 import { buildCourseCurrentLevel } from './features/courses/courseUtils';
 import { resolveQuizContextRecovery } from './features/chat/quizRecovery';
 import type { GraphData, GraphNode, GraphNodeAttributes, LearnerState, ChatMessage, Course, ChatOptions, SessionSnapshot, CourseCitation, GroundingSource, KnowledgeScope, CourseIndexRecovery } from './types';
 import { NodeDetailsModal } from './features/graph/NodeDetailsModal';
 import { AddNodeDialog } from './features/graph/AddNodeDialog';
+import { GraphGenerationProgress } from './features/graph/GraphGenerationProgress';
 import Dashboard from './features/dashboard/Dashboard';
 import HomePage from './features/home/HomePage';
 import { Button } from './components/ui/button';
@@ -112,6 +113,10 @@ function App() {
 
   const [chatMessages, setChatMessages] = useState<ChatMessage[]>([]);
   const [isGenerating, setIsGenerating] = useState(false);
+  // 星图生成的真实进度（SSE 推送的阶段），用于替代干等的转圈
+  const [genProgress, setGenProgress] = useState<GraphProgress[]>([]);
+  // 正在生成星图的课程 id，让课程目录页对应卡片也能显示进度
+  const [generatingCourseId, setGeneratingCourseId] = useState('');
   const [isChatLoading, setIsChatLoading] = useState(false);
   const [contextMenuNode, setContextMenuNode] = useState<ContextMenuNode | null>(null);
   // 账号与班级两个入口在首页和学习页都要用，状态提到最外层。
@@ -558,15 +563,25 @@ function App() {
     }
 
     setIsGenerating(true);
-    setIsDialogOpen(false); 
-    
+    setGenProgress([]);
+    setIsDialogOpen(false);
+
     // Create new session ID for the upcoming graph
     const newSessionId = Date.now().toString();
-    
+
     try {
-      toast.info('Generating Knowledge Graph...');
-      // Use user input for topic, goal, and current level. 
-      const data = await api.generateGraph(inputTopic, inputGoal, inputLevel || '零基础', '掌握核心概念', inputComplexity);
+      // 用 SSE 流式接口，实时收到后端推送的生成阶段进度
+      const data = await generateGraphStream(
+        '/graph/generate-stream',
+        {
+          topic: inputTopic,
+          learning_goal: inputGoal,
+          current_level: inputLevel || '零基础',
+          target_level: '掌握核心概念',
+          complexity: inputComplexity,
+        },
+        (p) => setGenProgress((prev) => [...prev, p]),
+      );
       
       // Reset state for new graph
       setGraphData(data);
@@ -613,6 +628,7 @@ function App() {
       console.error(error);
     } finally {
       setIsGenerating(false);
+      setGenProgress([]);
       // NOTE: 清空对话框输入，避免下次打开残留旧值
       setInputTopic('');
       setInputLevel('');
@@ -624,17 +640,22 @@ function App() {
     if (graphData) saveCurrentSession();
 
     setIsGenerating(true);
+    setGenProgress([]);
+    setGeneratingCourseId(course.id);
     const newSessionId = Date.now().toString();
     const courseCurrentLevel = buildCourseCurrentLevel(course);
     try {
-      toast.info(`正在载入《${course.title}》课程星图…`);
-      const data = await api.generateGraph(
-        course.title,
-        `严格依据《${course.title}》课程教材建立系统学习路径`,
-        courseCurrentLevel,
-        '完成课程核心知识与实训',
-        2,
-        course.id,
+      const data = await generateGraphStream(
+        '/graph/generate-stream',
+        {
+          topic: course.title,
+          learning_goal: `严格依据《${course.title}》课程教材建立系统学习路径`,
+          current_level: courseCurrentLevel,
+          target_level: '完成课程核心知识与实训',
+          complexity: 2,
+          course_id: course.id,
+        },
+        (p) => setGenProgress((prev) => [...prev, p]),
       );
 
       setGraphData(data);
@@ -677,6 +698,8 @@ function App() {
       handleRequestError(error, '课程星图生成失败，请检查模型配置');
     } finally {
       setIsGenerating(false);
+      setGenProgress([]);
+      setGeneratingCourseId('');
     }
   };
 
@@ -759,15 +782,19 @@ function App() {
     if (graphData) saveCurrentSession();
 
     setIsGenerating(true);
+    setGenProgress([]);
     setIsDialogOpen(false);
     const newSessionId = Date.now().toString();
 
     try {
-      toast.info(t('project.generating'));
-      const data = await api.generateProjectGraph(
-        inputProjectDesc,
-        inputLevel || '零基础',
-        inputComplexity
+      const data = await generateGraphStream(
+        '/graph/generate-project-stream',
+        {
+          project_description: inputProjectDesc,
+          current_level: inputLevel || '零基础',
+          complexity: inputComplexity,
+        },
+        (p) => setGenProgress((prev) => [...prev, p]),
       );
 
       // 切换到项目模式
@@ -817,6 +844,7 @@ function App() {
       console.error(error);
     } finally {
       setIsGenerating(false);
+      setGenProgress([]);
       setInputProjectDesc('');
       setInputLevel('');
     }
@@ -1513,6 +1541,8 @@ ${evaluation.feedback}
              onDeleteSession={(sessionId) => void handleDeleteSession(sessionId)}
              courseRecovery={courseRecovery}
              onCourseRecoveryHandled={() => setCourseRecovery(null)}
+             generateProgress={genProgress}
+             generatingCourseId={generatingCourseId}
            />
          </motion.div>
        ) : (
@@ -1780,10 +1810,7 @@ ${evaluation.feedback}
                                             )}
                                             {isGenerating && (
                                                 <div className="absolute inset-0 z-50 flex items-center justify-center bg-background/60 backdrop-blur-sm">
-                                                    <div className="flex flex-col items-center gap-2">
-                                                        <Loader2 className="w-8 h-8 animate-spin text-primary" />
-                                                        <p>{t('graph.generating')}</p>
-                                                    </div>
+                                                    <GraphGenerationProgress progress={genProgress} title={t('graph.generating')} />
                                                 </div>
                                             )}
                                           </div>

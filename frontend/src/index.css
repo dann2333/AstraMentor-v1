@@ -340,6 +340,13 @@ body.eye-care {
 .course-card__stats span { display: flex; align-items: center; gap: 5px; min-width: 0; overflow-wrap: anywhere; }
 .course-card__message { display: flex; align-items: flex-start; gap: 6px; margin: 0 0 13px; padding: 8px; border: 1px solid hsl(var(--border)); background: hsl(var(--muted)); color: hsl(var(--foreground)); font: 10px/1.55 Inter, "Microsoft YaHei", sans-serif; overflow-wrap: anywhere; }
 .course-card__message svg { flex: none; margin-top: 1px; }.course-card__message--error { border-color: hsl(var(--destructive)); background: hsl(var(--destructive) / .14); color: hsl(var(--foreground)); }
+.course-card__progress { list-style: none; margin: 0 0 13px; padding: 10px 12px; border: 1px solid hsl(var(--border)); border-radius: 10px; background: hsl(var(--muted) / .5); display: grid; gap: 7px; }
+.course-card__progress li { display: flex; align-items: flex-start; gap: 7px; font: 11px/1.5 Inter, "Microsoft YaHei", sans-serif; }
+.course-card__progress li svg { flex: none; margin-top: 2px; }
+.course-card__progress li.is-current { color: hsl(var(--foreground)); }
+.course-card__progress li.is-current svg { color: hsl(var(--primary)); }
+.course-card__progress li.is-done { color: hsl(var(--muted-foreground)); }
+.course-card__progress li.is-done svg { color: hsl(142 70% 45%); }
 .course-card__actions { display: grid; gap: 8px; margin-top: auto; }
 .course-card button, .course-empty button {
   width: 100%;

@@ -1,9 +1,11 @@
 import logging
+import queue
+import threading
 import uuid
 import hashlib
 import re
 from pathlib import Path
-from typing import Optional, Dict, List, Any
+from typing import Callable, Optional, Dict, List, Any
 from datetime import datetime
 
 from agents.teacher_agent import TeacherAgent
@@ -54,7 +56,11 @@ class LearningService:
         self.owner_id = validate_owner_id(owner_id)
         self.store = store or learning_store
         self.api_client = APIClient()
-        self.knowledge_graph = KnowledgeGraphAgent(api_client=self.api_client)
+        self._progress_cb: Optional[Callable[[str, str], None]] = None
+        self.knowledge_graph = KnowledgeGraphAgent(
+            api_client=self.api_client,
+            progress_cb=lambda step, msg: self._emit_progress(step, msg),
+        )
         self.teacher = TeacherAgent(api_client=self.api_client)
         self.evaluator = EvaluationAgent(api_client=self.api_client)
         self.course_id = course_id
@@ -74,6 +80,18 @@ class LearningService:
             self.owner_id,
             self._state_scope(topic),
         )
+
+    # ─────────────────────────────────────────────
+    # 星图生成进度上报（供 SSE 端点使用）
+    # ─────────────────────────────────────────────
+
+    def _emit_progress(self, step: str, message: str) -> None:
+        if self._progress_cb is None:
+            return
+        try:
+            self._progress_cb(step, message)
+        except Exception:  # 进度推送失败绝不能影响主流程
+            logger.debug("progress callback failed", exc_info=True)
 
     @staticmethod
     def _legacy_safe_topic(topic: str) -> str:
@@ -142,6 +160,67 @@ class LearningService:
         result["knowledge_scope"] = "course" if citations else "extension"
         return result
 
+    def stream_graph_generation(
+        self,
+        *,
+        mode: str,
+        topic: str = "",
+        learning_goal: str = "",
+        current_level: str = "零基础",
+        target_level: str = "掌握核心概念",
+        complexity: int = 2,
+        project_description: str = "",
+    ):
+        """在后台线程生成星图，同时以 dict 事件流的形式产出真实进度。
+
+        生成是同步阻塞的（几十秒），不能直接放在 async 端点里跑；这里起
+        后台线程执行，主生成器从队列取进度事件 yield 给 SSE 层。事件：
+        - {"type": "progress", "step": ..., "message": ...}
+        - {"type": "done", "graph": ...}
+        - {"type": "error", "message": ...}
+        """
+        q: "queue.Queue[Dict[str, Any]]" = queue.Queue()
+        self._progress_cb = lambda step, msg: q.put(
+            {"type": "progress", "step": step, "message": msg}
+        )
+
+        def _run() -> None:
+            try:
+                if mode == "project":
+                    graph = self.generate_project_graph(
+                        project_description=project_description,
+                        current_level=current_level,
+                        complexity=complexity,
+                    )
+                else:
+                    graph = self.generate_knowledge_graph(
+                        topic=topic,
+                        learning_goal=learning_goal,
+                        current_level=current_level,
+                        target_level=target_level,
+                        complexity=complexity,
+                    )
+                if not graph:
+                    q.put({"type": "error", "message": "星图生成失败，请重试"})
+                else:
+                    q.put({"type": "done", "graph": graph})
+            except CourseIndexNotReadyError as e:
+                q.put({"type": "error", "message": str(e) or "课程索引未就绪"})
+            except Exception as e:  # 兜底，避免线程内异常把队列饿死
+                logger.exception("graph generation worker failed")
+                q.put({"type": "error", "message": f"星图生成出错：{e}"})
+            finally:
+                q.put({"type": "__end__"})
+
+        threading.Thread(target=_run, daemon=True).start()
+
+        while True:
+            event = q.get()
+            if event.get("type") == "__end__":
+                break
+            yield event
+        self._progress_cb = None
+
     def generate_knowledge_graph(
         self,
         topic: str,
@@ -152,12 +231,15 @@ class LearningService:
     ) -> Optional[Dict[str, Any]]:
         """Generates a knowledge graph."""
         try:
+            if self.course_id:
+                self._emit_progress("retrieve", "正在检索课程教材证据…")
             course_context, _ = self._course_evidence(
                 f"{topic} 课程目录 核心概念 前置知识 学习路径"
             )
             grounded_goal = learning_goal
             if course_context:
                 grounded_goal = f"{learning_goal}\n\n{course_context}".strip()
+            self._emit_progress("generate", "AI 正在规划知识结构并生成星图（约 1 分钟）…")
             graph_data = self.knowledge_graph.generate_knowledge_graph(
                 topic=topic,
                 learning_goal=grounded_goal,
@@ -165,7 +247,8 @@ class LearningService:
                 target_level=target_level,
                 complexity=complexity,
             )
-            
+
+            self._emit_progress("save", "正在保存星图…")
             self._persist_graph(topic, graph_data)
 
             return graph_data
@@ -187,12 +270,14 @@ class LearningService:
         NOTE: 委托给 KnowledgeGraphAgent.generate_project_graph() 并持久化结果
         """
         try:
+            self._emit_progress("generate", "AI 正在分析项目所需技能并生成路径（约 1 分钟）…")
             graph_data = self.knowledge_graph.generate_project_graph(
                 project_description=project_description,
                 current_level=current_level,
                 complexity=complexity,
             )
 
+            self._emit_progress("save", "正在保存星图…")
             self._persist_graph(project_description[:50], graph_data)
 
             return graph_data

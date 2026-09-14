@@ -15,6 +15,9 @@ interface HomePageProps {
   onDeleteSession: (sessionId: string) => void;
   courseRecovery?: CourseIndexRecovery | null;
   onCourseRecoveryHandled?: () => void;
+  /** 课程星图生成的实时进度，透传给 CourseCatalog 在卡片上展示 */
+  generateProgress?: { step: string; message: string }[];
+  generatingCourseId?: string;
 }
 
 export default function HomePage({
@@ -27,6 +30,8 @@ export default function HomePage({
   onDeleteSession,
   courseRecovery,
   onCourseRecoveryHandled,
+  generateProgress = [],
+  generatingCourseId = '',
 }: HomePageProps) {
   return (
     <div className="astra-home">
@@ -80,6 +85,8 @@ export default function HomePage({
             onSelectCourse={onSelectCourse}
             recovery={courseRecovery}
             onRecoveryHandled={onCourseRecoveryHandled}
+            generateProgress={generateProgress}
+            generatingCourseId={generatingCourseId}
           />
         </section>
         </div>

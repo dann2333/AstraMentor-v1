@@ -3,6 +3,7 @@ import type { CSSProperties } from 'react';
 import {
   AlertTriangle,
   BookOpen,
+  CheckCircle2,
   Clock3,
   Database,
   GraduationCap,
@@ -23,6 +24,10 @@ interface CourseCatalogProps {
   onSelectCourse: (course: Course) => Promise<void>;
   recovery?: CourseIndexRecovery | null;
   onRecoveryHandled?: () => void;
+  /** 星图生成的实时进度（SSE 推送），由 App 透传，用于在卡片上展示 */
+  generateProgress?: { step: string; message: string }[];
+  /** 正在生成星图的课程 id，进度显示在对应卡片上 */
+  generatingCourseId?: string;
 }
 
 interface CardMessage {
@@ -55,7 +60,7 @@ function indexSummary(course: Course): string {
   return '知识库待构建';
 }
 
-export function CourseCatalog({ onSelectCourse, recovery, onRecoveryHandled }: CourseCatalogProps) {
+export function CourseCatalog({ onSelectCourse, recovery, onRecoveryHandled, generateProgress = [], generatingCourseId = '' }: CourseCatalogProps) {
   const [courses, setCourses] = useState<Course[]>([]);
   const [warnings, setWarnings] = useState<Record<string, string[]>>({});
   const [loading, setLoading] = useState(true);
@@ -366,6 +371,22 @@ export function CourseCatalog({ onSelectCourse, recovery, onRecoveryHandled }: C
                 {cardMessages[course.id].kind === 'error' && <AlertTriangle size={13} />}
                 {cardMessages[course.id].text}
               </p>
+            )}
+
+            {enteringThisCourse && generatingCourseId === course.id && generateProgress.length > 0 && (
+              <ul className="course-card__progress" role="status" aria-live="polite">
+                {generateProgress.map((p, i) => {
+                  const isCurrent = i === generateProgress.length - 1;
+                  return (
+                    <li key={i} className={isCurrent ? 'is-current' : 'is-done'}>
+                      {isCurrent
+                        ? <Loader2 size={13} className="animate-spin" />
+                        : <CheckCircle2 size={13} />}
+                      <span>{p.message}</span>
+                    </li>
+                  );
+                })}
+              </ul>
             )}
 
             <div className="course-card__actions">

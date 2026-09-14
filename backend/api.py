@@ -156,6 +156,48 @@ async def generate_graph(
         raise HTTPException(status_code=500, detail="Failed to generate knowledge graph")
     return graph
 
+@router.post("/graph/generate-stream")
+async def generate_graph_stream(
+    request: GenerateGraphRequest,
+    owner_id: str = Depends(get_owner_id),
+) -> StreamingResponse:
+    """以 SSE 推送星图生成的真实进度，最后一条事件给出完整图谱。"""
+    service = get_service(
+        owner_id, request.topic, request.course_id, require_course_index=True
+    )
+
+    def events():
+        try:
+            yield encode_sse("progress", {"step": "init", "message": "正在准备生成星图…"})
+            for item in service.stream_graph_generation(
+                mode="topic",
+                topic=request.topic,
+                learning_goal=request.learning_goal,
+                current_level=request.current_level,
+                target_level=request.target_level,
+                complexity=request.complexity,
+            ):
+                if item["type"] == "done":
+                    yield encode_sse("done", {"graph": item["graph"]})
+                elif item["type"] == "error":
+                    yield encode_sse("error", {"message": item["message"]})
+                else:
+                    yield encode_sse("progress", {"step": item["step"], "message": item["message"]})
+        except GeneratorExit:
+            return
+        except Exception as exc:
+            yield encode_sse("error", {"message": str(exc)})
+
+    return StreamingResponse(
+        events(),
+        media_type="text/event-stream",
+        headers={
+            "Cache-Control": "no-cache, no-transform",
+            "X-Accel-Buffering": "no",
+            "Connection": "keep-alive",
+        },
+    )
+
 @router.post("/graph/save")
 async def save_graph(
     request: SaveGraphRequest,
@@ -224,6 +266,44 @@ async def generate_project_graph(
     if not graph:
         raise HTTPException(status_code=500, detail="Failed to generate project graph")
     return graph
+
+@router.post("/graph/generate-project-stream")
+async def generate_project_graph_stream(
+    request: GenerateProjectGraphRequest,
+    owner_id: str = Depends(get_owner_id),
+) -> StreamingResponse:
+    """项目模式：SSE 推送技能路径星图生成进度。"""
+    service = get_service(owner_id, request.project_description[:50])
+
+    def events():
+        try:
+            yield encode_sse("progress", {"step": "init", "message": "正在准备生成项目技能路径…"})
+            for item in service.stream_graph_generation(
+                mode="project",
+                project_description=request.project_description,
+                current_level=request.current_level,
+                complexity=request.complexity,
+            ):
+                if item["type"] == "done":
+                    yield encode_sse("done", {"graph": item["graph"]})
+                elif item["type"] == "error":
+                    yield encode_sse("error", {"message": item["message"]})
+                else:
+                    yield encode_sse("progress", {"step": item["step"], "message": item["message"]})
+        except GeneratorExit:
+            return
+        except Exception as exc:
+            yield encode_sse("error", {"message": str(exc)})
+
+    return StreamingResponse(
+        events(),
+        media_type="text/event-stream",
+        headers={
+            "Cache-Control": "no-cache, no-transform",
+            "X-Accel-Buffering": "no",
+            "Connection": "keep-alive",
+        },
+    )
 
 @router.get("/state")
 async def get_state(owner_id: str = Depends(get_owner_id)):

@@ -42,6 +42,12 @@ class APIClient:
         # 可能并存不同模型的客户端。
         self._temperature_unsupported = False
 
+        # Kimi K3 官方文档明确：temperature/top_p 等为固定值，建议不要显式传入，
+        # 且 K3 始终开启思考模式。对 moonshot 直接全程不传 temperature，
+        # 思考强度用请求顶层 reasoning_effort（low/high/max）表达。
+        if self.provider in ("moonshot", "kimi"):
+            self._temperature_unsupported = True
+
         api_key = config.api.api_key or os.getenv("GEMINI_API_KEY") or os.getenv("ZHIPU_API_KEY") or os.getenv("DASHSCOPE_API_KEY")
         if not api_key:
             raise ValueError("Missing API key (ASTRA_API_KEY / GEMINI_API_KEY / ZHIPU_API_KEY / DASHSCOPE_API_KEY)")
@@ -83,11 +89,28 @@ class APIClient:
         if base_url.lower().endswith(suffix):
             base_url = base_url[: -len(suffix)]
             logger.warning("ASTRA_API_ENDPOINT 已自动规范化为 API 根地址: %s", base_url)
+        # Kimi K3 始终开启思考模式，且思考长度不可关闭。非流式的结构化输出
+        # （星图/教学计划等大段 JSON）思考+生成常超过 120s。这里把超时加大到
+        # 600s，并把 SDK 自动重试降为 0——之前每次超时都会无上限重试，叠加成
+        # 前端看到的"一直卡着不出图"。
+        is_moonshot = self.provider in ("moonshot", "kimi")
         self.client = OpenAI(
             api_key=api_key,
             base_url=base_url,
-            timeout=120.0,
+            timeout=600.0 if is_moonshot else 120.0,
+            max_retries=0 if is_moonshot else 2,
         )
+
+    def _apply_thinking(self, kwargs: Dict[str, Any], thinking: bool) -> None:
+        """把 thinking 开关翻译成各家 OpenAI 兼容端点能懂的参数。
+
+        Kimi K3 始终开启思考模式，强度用请求顶层 reasoning_effort
+        （low / high / max，默认 max）控制；智谱等则用 reasoning.enabled。
+        """
+        if self.provider in ("moonshot", "kimi"):
+            kwargs["extra_body"] = {"reasoning_effort": "high" if thinking else "low"}
+        elif thinking:
+            kwargs["extra_body"] = {"reasoning": {"enabled": True}}
 
     # ─────────────────────────────────────────────
     # OpenAI 兼容端点的统一入口
@@ -236,8 +259,7 @@ class APIClient:
             }
             if max_tokens:
                 kwargs["max_tokens"] = max_tokens
-            if thinking:
-                kwargs["extra_body"] = {"reasoning": {"enabled": True}}
+            self._apply_thinking(kwargs, thinking)
 
             try:
                 resp = self._create_completion(**kwargs)
@@ -395,8 +417,7 @@ class APIClient:
         }
         if max_tokens:
             kwargs["max_tokens"] = max_tokens
-        if thinking:
-            kwargs["extra_body"] = {"reasoning": {"enabled": True}}
+        self._apply_thinking(kwargs, thinking)
 
         try:
             stream = self._create_completion(**kwargs)
@@ -538,6 +559,29 @@ class APIClient:
                 self.generate(prompt=prompt, system_instruction=system_instruction, temperature=temperature)
             )
 
+    def _stream_collect_text(self, kwargs: Dict[str, Any]) -> str:
+        """流式调用并拼接完整 content，跳过 reasoning 增量。
+
+        用于 K3 的长 JSON 生成：流式让网关持续有数据可传，规避非流式的
+        单请求超时（504）。只收集最终 content，丢弃思考过程。
+        """
+        kwargs = dict(kwargs)
+        kwargs["stream"] = True
+        parts: List[str] = []
+        # 走 _create_completion：它会在模型锁死 temperature 时自动剥掉该参数
+        stream = self._create_completion(**kwargs)
+        for chunk in stream:
+            choices = getattr(chunk, "choices", None) or []
+            if not choices:
+                continue
+            delta = getattr(choices[0], "delta", None)
+            if delta is None:
+                continue
+            content = getattr(delta, "content", None)
+            if content:
+                parts.append(str(content))
+        return "".join(parts)
+
     def _generate_json_zhipu(
         self,
         prompt: str,
@@ -582,9 +626,17 @@ class APIClient:
                 "temperature": temperature,
                 "response_format": {"type": "json_object"},
             }
+            # NOTE: K3 始终思考，结构化输出用 low 档缩短推理、尽快返回 JSON
+            self._apply_thinking(kwargs, thinking=False)
 
-            resp = self._create_completion(**kwargs)
-            text = self._extract_zhipu_content(resp)
+            # NOTE: 星图/教学计划等 JSON 输出很长，K3 非流式生成会超过 Kimi 网关
+            # 约 2 分钟的单请求上限而 504。改用流式：只要持续有增量数据，网关就
+            # 不会切断，最后再拼接完整 JSON 文本。
+            if self.provider in ("moonshot", "kimi"):
+                text = self._stream_collect_text(kwargs)
+            else:
+                resp = self._create_completion(**kwargs)
+                text = self._extract_zhipu_content(resp)
 
             if output_schema:
                 # 通过 Pydantic model_validate 校验并返回实例
