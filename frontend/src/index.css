@@ -144,6 +144,84 @@ button:active:not(:disabled) { transform: scale(0.97); }
 
 .ai-content strong, .ai-content b, .ai-content h1, .ai-content h2, .ai-content h3 { font-weight: 700; }
 
+/* ── AI 正文里的 GFM 表格 ──────────────────────────────────────────
+   remark-gfm 一直开着，所以表格本来就解析成了 <table>，但一直没有任何样式：
+   没有边框、没有内边距，列宽由浏览器按内容硬挤，第一列经常被压到一个字一行
+   （容器上还有 break-words 帮倒忙），整张表根本读不出行列关系。
+
+   这里的取法：
+   - 外层横向滚动，表格给一个 min-width。教材里的表格常有三四列长文本，
+     宁可横向滚，也不要把列压死。
+   - border-collapse + 逐格细线，行列关系一眼能看出来。
+   - 颜色全部走主题 token，两套主题都成立，不写死任何一种。 */
+.ai-table-scroll {
+  overflow-x: auto;
+  margin: 1rem 0;
+  border-radius: var(--glass-radius-sm, 10px);
+  box-shadow: inset 0 0 0 1px hsl(var(--border));
+  /* 横向滚动条不要盖住最后一行 */
+  padding-bottom: 1px;
+}
+
+.ai-table {
+  width: 100%;
+  min-width: 34rem;
+  border-collapse: collapse;
+  /* fixed 会让长单元格互相挤，这里让内容决定列宽，配合上面的横向滚动 */
+  table-layout: auto;
+  font-size: 0.9375rem;
+  line-height: 1.6;
+}
+
+.ai-table__head {
+  background: hsl(var(--muted) / .6);
+}
+
+.ai-table__th,
+.ai-table__td {
+  /* 单元格内允许正常换行，但不许逐字断行 —— 那是之前最难读的地方 */
+  overflow-wrap: break-word;
+  word-break: normal;
+  padding: 0.5rem 0.75rem;
+  border-bottom: 1px solid hsl(var(--border));
+  border-right: 1px solid hsl(var(--border) / .6);
+  vertical-align: top;
+  text-align: left;
+}
+
+.ai-table__th {
+  font-weight: 700;
+  white-space: nowrap;
+  color: hsl(var(--foreground));
+}
+
+.ai-table tr:last-child .ai-table__td { border-bottom: 0; }
+.ai-table__th:last-child,
+.ai-table__td:last-child { border-right: 0; }
+.ai-table tbody tr:nth-child(even) { background: hsl(var(--muted) / .25); }
+
+/* 单元格里的行内代码不要再叠一层深底色，表格里会糊成一片 */
+.ai-table__td code,
+.ai-table__th code {
+  background: hsl(var(--muted) / .7);
+  white-space: nowrap;
+}
+
+/* 代码块。react-syntax-highlighter 的 vscDarkPlus 本身是暗色的，两套主题下
+   都用它没问题（代码块深色是常规做法），但边框要跟着主题走。 */
+.ai-content .ai-code-block {
+  border-radius: var(--glass-radius-sm, 10px) !important;
+  border: 1px solid hsl(var(--border)) !important;
+  margin: 0.75rem 0 !important;
+  overflow-x: auto;
+}
+
+.ai-content__rule {
+  border: 0;
+  border-top: 1px solid hsl(var(--border));
+  margin: 1.25rem 0;
+}
+
 /* NOTE: 底色画在 body 上，而不是页面容器上。
    粒子画布是 position: fixed / z-index: 0，容器只要自带不透明背景，
    就会整个盖在画布之上 —— 粒子一个都看不见，而且很难查。
@@ -596,3 +674,138 @@ body.eye-care {
     transform: none;
   }
 }
+
+/* ── 星图生成任务面板 ─────────────────────────────────────────────
+   生成跑在服务端的任务里，所以这个面板刷新之后还在。它要解决的具体问题是
+   "看不出有没有在动"：之前只有几条阶段标签，模型思考那几分钟界面毫无变化，
+   跟卡死没法区分。现在把模型的 reasoning / content 增量也摊在这里。 */
+.job-panel {
+  margin: 0 0 1.25rem;
+}
+
+.job-panel__head {
+  display: flex;
+  align-items: baseline;
+  gap: .5rem;
+  margin-bottom: .6rem;
+}
+.job-panel__head strong { font-size: .95rem; letter-spacing: .01em; }
+.job-panel__head span { font-size: .8rem; color: hsl(var(--muted-foreground)); }
+
+.job-panel__list { display: grid; gap: .6rem; }
+
+.job-card {
+  border-radius: var(--glass-radius-sm, 12px);
+  padding: .7rem .8rem;
+  display: grid;
+  gap: .45rem;
+}
+
+.job-card__head { display: flex; align-items: center; gap: .5rem; }
+
+.job-card__icon { display: inline-flex; color: hsl(var(--primary)); flex: none; }
+.job-card[data-status="done"] .job-card__icon { color: hsl(var(--success)); }
+.job-card[data-status="failed"] .job-card__icon { color: hsl(var(--destructive)); }
+
+.job-spin { animation: job-spin 1s linear infinite; }
+@keyframes job-spin { to { transform: rotate(360deg); } }
+/* 尊重系统的"减少动态效果"设置 */
+@media (prefers-reduced-motion: reduce) {
+  .job-spin { animation: none; }
+  .job-card__bar i { animation: none; width: 100%; opacity: .5; }
+}
+
+.job-card__title { min-width: 0; flex: 1; display: grid; }
+.job-card__title strong {
+  font-size: .9rem;
+  white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+}
+.job-card__title span { font-size: .75rem; color: hsl(var(--muted-foreground)); }
+
+.job-card__toggle,
+.job-card__close,
+.job-card__open {
+  display: inline-flex; align-items: center; gap: .3rem;
+  border: 0; background: transparent; cursor: pointer;
+  color: hsl(var(--muted-foreground));
+  border-radius: 8px; padding: .25rem;
+  transition: color var(--glass-duration, .2s) var(--glass-ease-out, ease),
+              background var(--glass-duration, .2s) var(--glass-ease-out, ease);
+}
+.job-card__toggle:hover, .job-card__close:hover {
+  color: hsl(var(--foreground));
+  background: hsl(var(--muted) / .6);
+}
+.job-card__toggle svg { transition: transform .2s var(--glass-ease-out, ease); }
+
+.job-card__message {
+  margin: 0;
+  font-size: .82rem;
+  color: hsl(var(--muted-foreground));
+  overflow-wrap: break-word;
+}
+.job-card[data-status="failed"] .job-card__message { color: hsl(var(--destructive)); }
+
+/* 不定长进度条：生成时长没法预估，不要假装有百分比。 */
+.job-card__bar {
+  height: 3px; border-radius: 3px; overflow: hidden;
+  background: hsl(var(--muted) / .7);
+}
+.job-card__bar i {
+  display: block; height: 100%; width: 38%; border-radius: 3px;
+  background: linear-gradient(90deg, transparent, hsl(var(--primary)), transparent);
+  animation: job-sweep 1.6s ease-in-out infinite;
+}
+@keyframes job-sweep {
+  0%   { transform: translateX(-100%); }
+  100% { transform: translateX(265%); }
+}
+
+.job-card__log {
+  max-height: 11rem;
+  overflow-y: auto;
+  border-radius: 8px;
+  background: hsl(var(--muted) / .45);
+  box-shadow: inset 0 0 0 1px hsl(var(--border) / .7);
+  padding: .45rem .55rem;
+  display: grid;
+  gap: .25rem;
+}
+
+.job-log__row {
+  margin: 0;
+  font-size: .76rem;
+  line-height: 1.55;
+  color: hsl(var(--muted-foreground));
+  /* 模型吐出来的是 JSON 片段，保留换行才看得出结构；但不能逐字断行 */
+  white-space: pre-wrap;
+  overflow-wrap: break-word;
+  word-break: normal;
+}
+.job-log__row > span {
+  display: inline-block;
+  min-width: 2.4em;
+  margin-right: .4em;
+  font-size: .68rem;
+  font-weight: 600;
+  letter-spacing: .04em;
+  color: hsl(var(--muted-foreground) / .8);
+}
+.job-log__row[data-kind="progress"] { color: hsl(var(--foreground)); }
+.job-log__row[data-kind="progress"] > span { color: hsl(var(--primary)); }
+.job-log__row[data-kind="content"] {
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  color: hsl(var(--foreground) / .9);
+}
+.job-log__row[data-kind="content"] > span { color: hsl(var(--accent)); }
+.job-log__row[data-kind="error"] { color: hsl(var(--destructive)); }
+.job-log__row[data-kind="error"] > span { color: hsl(var(--destructive)); }
+
+.job-card__open {
+  justify-self: start;
+  padding: .32rem .7rem;
+  font-size: .8rem;
+  color: hsl(var(--primary-foreground));
+  background: hsl(var(--primary) / .9);
+}
+.job-card__open:hover { background: hsl(var(--primary)); }

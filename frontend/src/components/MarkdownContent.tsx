@@ -45,6 +45,36 @@ const components: Components = {
     void node;
     return <p className="leading-7 mb-3 last:mb-0" {...props} />;
   },
+  // GFM 表格。remark-gfm 一直是开着的，表格能解析成 <table>，但之前既没有
+  // 组件覆写也没有 CSS —— 于是渲染成一坨没边框、列宽乱挤的原生表格，窄列还
+  // 会被容器的 break-words 逐字断行，完全读不了。
+  //
+  // 外面套一层横向滚动：教材里的表格经常有三四列长文本，宁可让它横向滚，
+  // 也不要把列压到一个字一行。
+  table: ({ node, ...props }) => {
+    void node;
+    return (
+      <div className="ai-table-scroll">
+        <table className="ai-table" {...props} />
+      </div>
+    );
+  },
+  thead: ({ node, ...props }) => {
+    void node;
+    return <thead className="ai-table__head" {...props} />;
+  },
+  th: ({ node, ...props }) => {
+    void node;
+    return <th className="ai-table__th" {...props} />;
+  },
+  td: ({ node, ...props }) => {
+    void node;
+    return <td className="ai-table__td" {...props} />;
+  },
+  hr: ({ node, ...props }) => {
+    void node;
+    return <hr className="ai-content__rule" {...props} />;
+  },
   code: ({ node, className, children, ...props }) => {
     void node;
     const match = /language-(\w+)/.exec(className || '');
@@ -54,7 +84,10 @@ const components: Components = {
           style={vscDarkPlus}
           language={match[1]}
           PreTag="div"
-          customStyle={{ borderRadius: 2, border: '2px solid #171225', margin: '0.75rem 0' }}
+          // 圆角和边框交给 CSS（.ai-content pre），别在这儿写死一个只在暗色
+          // 主题下成立的 #171225 —— 护眼模式下那是一道突兀的黑框。
+          className="ai-code-block"
+          customStyle={{ borderRadius: undefined, border: undefined, margin: undefined }}
         >
           {String(children).replace(/\n$/, '')}
         </SyntaxHighlighter>

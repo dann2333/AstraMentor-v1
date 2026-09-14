@@ -1,7 +1,9 @@
 import { lazy, Suspense, useState, useEffect, useRef } from 'react';
 import { Toaster, toast } from 'sonner';
 import { api } from './api/client';
-import { streamLearning, generateGraphStream, type GraphProgress } from './api/stream';
+import { streamLearning, type GraphProgress } from './api/stream';
+import { runGraphJob } from './features/jobs/runGraphJob';
+import { useGraphJobs } from './features/jobs/useGraphJobs';
 import { getCourseIndexNotReadyDetail, readableApiError } from './api/errors';
 import { buildCourseCurrentLevel } from './features/courses/courseUtils';
 import { resolveQuizContextRecovery } from './features/chat/quizRecovery';
@@ -121,6 +123,10 @@ function App() {
   const [contextMenuNode, setContextMenuNode] = useState<ContextMenuNode | null>(null);
   // 账号与班级两个入口在首页和学习页都要用，状态提到最外层。
   const { user, isRestoring } = useAuth();
+  // 服务端的星图生成任务。isRestoring 期间不轮询 —— 那会儿令牌还没确认，
+  // 请求会带着未验证的令牌发出（和下面历史列表那个 effect 同一个理由）。
+  const { jobs: graphJobs, dismiss: dismissGraphJob, load: loadGraphJob } =
+    useGraphJobs(!isRestoring);
   // 当前打开的这堂课属于谁。退出登录后自动保存若照常发出，
   // 这份私有快照会以访客身份写进共享空间，任何未登录的人都能读到。
   const lessonOwnerRef = useRef<string | null>(null);
@@ -570,16 +576,16 @@ function App() {
     const newSessionId = Date.now().toString();
 
     try {
-      // 用 SSE 流式接口，实时收到后端推送的生成阶段进度
-      const data = await generateGraphStream(
-        '/graph/generate-stream',
-        {
-          topic: inputTopic,
-          learning_goal: inputGoal,
-          current_level: inputLevel || '零基础',
-          target_level: '掌握核心概念',
-          complexity: inputComplexity,
-        },
+      // 走服务端任务而不是 SSE 长连接：模型静默几分钟会被反代的读超时掐断，
+      // 而且刷新一下页面就什么都不剩。任务在服务端跑，生成任务面板能接回来。
+      const data = await runGraphJob(
+        () => api.createGraphJob(
+          inputTopic,
+          inputGoal,
+          inputLevel || '零基础',
+          '掌握核心概念',
+          inputComplexity,
+        ),
         (p) => setGenProgress((prev) => [...prev, p]),
       );
       
@@ -636,6 +642,46 @@ function App() {
     }
   };
 
+  /**
+   * 打开一条已完成任务的星图。
+   *
+   * 这条路存在的意义：生成期间用户可以刷新、切标签、去干别的，任务在服务端
+   * 照常跑完；回来之后从面板点一下就进工作区，不用重新生成一遍。
+   */
+  const handleOpenGraphJob = async (jobId: string) => {
+    try {
+      const job = await loadGraphJob(jobId);
+      if (job.status !== 'done' || !job.graph) {
+        toast.warning(job.error || '这条任务还没有生成完');
+        return;
+      }
+
+      // 当前工作区里有图就先存一份，别让它被覆盖掉
+      if (graphData) saveCurrentSession();
+
+      const isCourse = Boolean(job.course_id);
+      setGraphData(job.graph);
+      setNodeSessions({});
+      setSelectedNode(null);
+      setChatMessages([]);
+      setTeachingPlan(null);
+      setCurrentSessionId(Date.now().toString());
+      setCurrentTopic(job.title);
+      setCurrentGoal(isCourse ? '完成课程核心知识与实训' : '');
+      setActiveCourseId(job.course_id || '');
+      setActiveCourseTitle(job.course_title || '');
+      // 任务只覆盖主题/课程/项目三种，进来时把另外两种模式的残留清掉
+      setDocMode(false);
+      setDocId('');
+      setDocFilename('');
+      setProjectMode(job.mode === 'project');
+      setProjectDescription(job.mode === 'project' ? job.title : '');
+      setShowLanding(false);
+    } catch (error) {
+      handleRequestError(error, '打开这张星图失败');
+    }
+  };
+
   const handleStartCourse = async (course: Course) => {
     if (graphData) saveCurrentSession();
 
@@ -645,16 +691,15 @@ function App() {
     const newSessionId = Date.now().toString();
     const courseCurrentLevel = buildCourseCurrentLevel(course);
     try {
-      const data = await generateGraphStream(
-        '/graph/generate-stream',
-        {
-          topic: course.title,
-          learning_goal: `严格依据《${course.title}》课程教材建立系统学习路径`,
-          current_level: courseCurrentLevel,
-          target_level: '完成课程核心知识与实训',
-          complexity: 2,
-          course_id: course.id,
-        },
+      const data = await runGraphJob(
+        () => api.createGraphJob(
+          course.title,
+          `严格依据《${course.title}》课程教材建立系统学习路径`,
+          courseCurrentLevel,
+          '完成课程核心知识与实训',
+          2,
+          course.id,
+        ),
         (p) => setGenProgress((prev) => [...prev, p]),
       );
 
@@ -787,13 +832,12 @@ function App() {
     const newSessionId = Date.now().toString();
 
     try {
-      const data = await generateGraphStream(
-        '/graph/generate-project-stream',
-        {
-          project_description: inputProjectDesc,
-          current_level: inputLevel || '零基础',
-          complexity: inputComplexity,
-        },
+      const data = await runGraphJob(
+        () => api.createProjectGraphJob(
+          inputProjectDesc,
+          inputLevel || '零基础',
+          inputComplexity,
+        ),
         (p) => setGenProgress((prev) => [...prev, p]),
       );
 
@@ -1543,6 +1587,9 @@ ${evaluation.feedback}
              onCourseRecoveryHandled={() => setCourseRecovery(null)}
              generateProgress={genProgress}
              generatingCourseId={generatingCourseId}
+             graphJobs={graphJobs}
+             onOpenJob={(jobId) => void handleOpenGraphJob(jobId)}
+             onDismissJob={(jobId) => void dismissGraphJob(jobId)}
            />
          </motion.div>
        ) : (

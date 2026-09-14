@@ -8,7 +8,7 @@ AstraMentor API 客户端
 import os
 import json
 import logging
-from typing import Optional, Any, Dict, Iterator, List
+from typing import Optional, Any, Callable, Dict, Iterator, List
 
 from config import get_config
 from utils.web_research import (
@@ -534,16 +534,21 @@ class APIClient:
         system_instruction: Optional[str] = None,
         temperature: float = 0.3,
         output_schema: Optional[Any] = None,
+        on_delta: Optional[Callable[[str, str], None]] = None,
     ):
         """
         生成结构化 JSON
 
         output_schema: Pydantic 模型类
+        on_delta: 可选，(kind, text) 实时收到模型增量，kind 为
+                  "reasoning" / "content"。只有走流式的 provider 会回调。
         返回：Pydantic 实例（有 schema 时）/ dict（无 schema 时）
         """
         if self.provider == "gemini":
             return self._generate_json_gemini(prompt, system_instruction, temperature, output_schema)
-        return self._generate_json_zhipu(prompt, system_instruction, temperature, output_schema)
+        return self._generate_json_zhipu(
+            prompt, system_instruction, temperature, output_schema, on_delta=on_delta
+        )
 
     def _generate_json_gemini(
         self,
@@ -580,11 +585,21 @@ class APIClient:
                 self.generate(prompt=prompt, system_instruction=system_instruction, temperature=temperature)
             )
 
-    def _stream_collect_text(self, kwargs: Dict[str, Any]) -> str:
-        """流式调用并拼接完整 content，跳过 reasoning 增量。
+    def _stream_collect_text(
+        self,
+        kwargs: Dict[str, Any],
+        on_delta: Optional[Callable[[str, str], None]] = None,
+    ) -> str:
+        """流式调用并拼接完整 content，返回值里不含 reasoning。
 
         用于 K3 的长 JSON 生成：流式让网关持续有数据可传，规避非流式的
-        单请求超时（504）。只收集最终 content，丢弃思考过程。
+        单请求超时（504）。
+
+        on_delta(kind, text) 是可选的旁路，kind 为 "reasoning" 或 "content"。
+        星图生成靠它把模型的实时输出透到前端的任务列表里 —— K3 关不掉思考，
+        content 的第一个字往往要等很久，不把 reasoning 透出去，界面上就是几
+        分钟毫无动静，跟卡死没有区别。返回值仍然只拼 content，思考过程不进
+        JSON 解析。
         """
         kwargs = dict(kwargs)
         kwargs["stream"] = True
@@ -598,10 +613,29 @@ class APIClient:
             delta = getattr(choices[0], "delta", None)
             if delta is None:
                 continue
+            if on_delta is not None:
+                # 思考增量在不同网关上字段名不一样，两种都认
+                reasoning = getattr(delta, "reasoning_content", None) or getattr(
+                    delta, "reasoning", None
+                )
+                if reasoning:
+                    self._safe_delta(on_delta, "reasoning", str(reasoning))
             content = getattr(delta, "content", None)
             if content:
                 parts.append(str(content))
+                if on_delta is not None:
+                    self._safe_delta(on_delta, "content", str(content))
         return "".join(parts)
+
+    @staticmethod
+    def _safe_delta(
+        on_delta: Callable[[str, str], None], kind: str, text: str
+    ) -> None:
+        """回调只是用来显示进度的，它自己出错绝不能把生成打断。"""
+        try:
+            on_delta(kind, text)
+        except Exception:  # noqa: BLE001
+            logger.debug("增量回调抛异常，已忽略", exc_info=True)
 
     def _generate_json_zhipu(
         self,
@@ -609,6 +643,7 @@ class APIClient:
         system_instruction: Optional[str],
         temperature: float,
         output_schema: Optional[Any],
+        on_delta: Optional[Callable[[str, str], None]] = None,
     ):
         """
         GLM 结构化输出——使用 json_object 模式 + Schema 引导
@@ -654,7 +689,7 @@ class APIClient:
             # 约 2 分钟的单请求上限而 504。改用流式：只要持续有增量数据，网关就
             # 不会切断，最后再拼接完整 JSON 文本。
             if self.provider in ("moonshot", "kimi"):
-                text = self._stream_collect_text(kwargs)
+                text = self._stream_collect_text(kwargs, on_delta)
             else:
                 resp = self._create_completion(**kwargs)
                 text = self._extract_zhipu_content(resp)

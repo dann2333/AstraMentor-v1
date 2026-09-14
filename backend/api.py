@@ -25,7 +25,8 @@ from backend.models import (
 
 from config import get_config
 from services.code_runner import CodeRunner
-from services.streaming_service import encode_sse
+from services.graph_jobs import graph_jobs, start_graph_job
+from services.streaming_service import encode_sse, with_heartbeat
 from rag.errors import CourseIndexNotReadyError
 
 router = APIRouter()
@@ -96,7 +97,9 @@ def build_streaming_response(
             )
 
     return StreamingResponse(
-        events(),
+        # with_heartbeat：生成器空闲时补 SSE 注释，否则一条几分钟不发字节的
+        # 连接会被反代的读超时掐掉（nginx 默认 60s），前端只看到 network error。
+        with_heartbeat(events()),
         media_type="text/event-stream",
         headers={
             "Cache-Control": "no-cache, no-transform",
@@ -200,7 +203,9 @@ async def generate_graph_stream(
             yield encode_sse("error", {"message": str(exc)})
 
     return StreamingResponse(
-        events(),
+        # with_heartbeat：生成器空闲时补 SSE 注释，否则一条几分钟不发字节的
+        # 连接会被反代的读超时掐掉（nginx 默认 60s），前端只看到 network error。
+        with_heartbeat(events()),
         media_type="text/event-stream",
         headers={
             "Cache-Control": "no-cache, no-transform",
@@ -208,6 +213,105 @@ async def generate_graph_stream(
             "Connection": "keep-alive",
         },
     )
+
+# ============================================================================
+# 星图生成任务
+# ============================================================================
+#
+# 为什么不用上面那两条 SSE：那是一条几分钟里几乎不发字节的长连接，反代的读
+# 超时会把它掐掉（前端只看到 network error，后端日志一条错都没有），刷新一下
+# 页面进度也全没了。任务模式下请求立刻返回，生成在后台跑，进度和**模型的实时
+# 输出**都往任务的事件流里追加，前端轮询即可，刷新也能接回去。
+
+
+@router.post("/graph/jobs")
+async def create_graph_job(
+    request: GenerateGraphRequest,
+    owner_id: str = Depends(get_owner_id),
+):
+    """开一条星图生成任务，立刻返回。"""
+    # 课程是否存在、索引是否就绪，在这里同步校验掉：这类错误应当是 4xx，
+    # 而不是先建一条任务再让它失败。
+    get_service(owner_id, request.topic, request.course_id, require_course_index=True)
+
+    course_title = None
+    if request.course_id:
+        try:
+            course_title = course_runtime.registry.get(request.course_id).title
+        except (KeyError, AttributeError):
+            course_title = None
+
+    job = start_graph_job(
+        owner_id,
+        mode="topic",
+        title=course_title or request.topic,
+        course_id=request.course_id,
+        course_title=course_title,
+        build_service=lambda: get_service(owner_id, request.topic, request.course_id),
+        topic=request.topic,
+        learning_goal=request.learning_goal or "",
+        current_level=request.current_level or "零基础",
+        target_level=request.target_level or "掌握核心概念",
+        complexity=request.complexity or 2,
+    )
+    return job.snapshot()
+
+
+@router.post("/graph/jobs/project")
+async def create_project_graph_job(
+    request: GenerateProjectGraphRequest,
+    owner_id: str = Depends(get_owner_id),
+):
+    """项目模式的星图生成任务。"""
+    job = start_graph_job(
+        owner_id,
+        mode="project",
+        title=request.project_description[:40] or "项目星图",
+        build_service=lambda: get_service(owner_id, request.project_description),
+        project_description=request.project_description,
+        current_level=request.current_level,
+        complexity=request.complexity,
+    )
+    return job.snapshot()
+
+
+@router.get("/graph/jobs")
+async def list_graph_jobs(owner_id: str = Depends(get_owner_id)):
+    """列出自己的任务。不带事件和星图 —— 列表只需要状态和一句进度。"""
+    return {
+        "jobs": [
+            job.snapshot(include_events=False, include_graph=False)
+            for job in graph_jobs.list(owner_id)
+        ]
+    }
+
+
+@router.get("/graph/jobs/{job_id}")
+async def get_graph_job(
+    job_id: str,
+    since: int = 0,
+    owner_id: str = Depends(get_owner_id),
+):
+    """取一条任务的增量。
+
+    since 传上次拿到的 last_seq，只会回比它新的事件，所以可以放心高频轮询。
+    """
+    job = graph_jobs.get(owner_id, job_id)
+    if job is None:
+        raise HTTPException(status_code=404, detail="任务不存在或已过期")
+    return job.snapshot(since=since)
+
+
+@router.delete("/graph/jobs/{job_id}", status_code=204)
+async def dismiss_graph_job(
+    job_id: str,
+    owner_id: str = Depends(get_owner_id),
+):
+    """把任务从列表里去掉（还在跑的后台线程会自己跑完并落盘）。"""
+    if not graph_jobs.dismiss(owner_id, job_id):
+        raise HTTPException(status_code=404, detail="任务不存在或已过期")
+    return None
+
 
 @router.post("/graph/save")
 async def save_graph(
@@ -307,7 +411,9 @@ async def generate_project_graph_stream(
             yield encode_sse("error", {"message": str(exc)})
 
     return StreamingResponse(
-        events(),
+        # with_heartbeat：生成器空闲时补 SSE 注释，否则一条几分钟不发字节的
+        # 连接会被反代的读超时掐掉（nginx 默认 60s），前端只看到 network error。
+        with_heartbeat(events()),
         media_type="text/event-stream",
         headers={
             "Cache-Control": "no-cache, no-transform",
