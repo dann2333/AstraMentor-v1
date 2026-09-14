@@ -1,0 +1,185 @@
+name: 构建 Docker 镜像
+
+# 产出一个同时支持 x86_64 和 arm64 的镜像，推到 GHCR。
+#
+# 两架构分别在各自架构的原生 runner 上构建，最后合并成一个 manifest。
+# 没走 QEMU 交叉编译：arm64 模拟下装 Python 依赖能慢上十倍，而这个仓库是
+# 公开的，GitHub 的 arm64 runner 对公开仓库免费。
+#
+# 拉取：docker pull ghcr.io/<owner>/<repo>:latest
+#   —— Docker 会按本机架构自动挑对应的那一份。
+
+on:
+  push:
+    branches: [main]
+    tags: ['v*']
+    # 只跟镜像内容有关的改动才触发。注意不能写 '**/*.md'：
+    # rag/courses/*/materials/ 下的教材也是 Markdown，改了就该重新出镜像。
+    paths-ignore:
+      - 'docs/**'
+      - 'README.md'
+      - '.gitignore'
+  pull_request:
+    branches: [main]
+    paths:
+      - 'Dockerfile'
+      - '.dockerignore'
+      - 'requirements.txt'
+      - 'frontend/package-lock.json'
+      - '.github/workflows/docker-image.yml'
+  # 需要时手动点一下也能跑
+  workflow_dispatch:
+
+env:
+  REGISTRY: ghcr.io
+  IMAGE_NAME: ${{ github.repository }}
+
+jobs:
+  build:
+    name: 构建 ${{ matrix.platform }}
+    runs-on: ${{ matrix.runner }}
+    permissions:
+      contents: read
+      packages: write
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - platform: linux/amd64
+            runner: ubuntu-24.04
+            arch: amd64
+          - platform: linux/arm64
+            runner: ubuntu-24.04-arm
+            arch: arm64
+
+    steps:
+      - name: 取出代码
+        uses: actions/checkout@v4
+
+      - name: 准备 buildx
+        uses: docker/setup-buildx-action@v3
+
+      # PR 阶段只构建不推送：fork 发来的 PR 拿不到 packages:write，
+      # 真去推会直接失败，而我们要的只是"Dockerfile 还能不能构建成功"。
+      - name: 登录 GHCR
+        if: github.event_name != 'pull_request'
+        uses: docker/login-action@v3
+        with:
+          registry: ${{ env.REGISTRY }}
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: 生成标签与标注
+        id: meta
+        uses: docker/metadata-action@v5
+        with:
+          images: ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}
+
+      - name: 构建并按 digest 推送
+        id: build
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          platforms: ${{ matrix.platform }}
+          labels: ${{ steps.meta.outputs.labels }}
+          # 这一步先不打人类可读的标签：两个架构各推一份同名标签会互相覆盖，
+          # 只能各推一个 digest，再由下面的 merge 作业合成一个 manifest。
+          outputs: |
+            type=image,name=${{ env.REGISTRY }}/${{ env.IMAGE_NAME }},push-by-digest=true,name-canonical=true,push=${{ github.event_name != 'pull_request' }}
+          # 按架构分开缓存，否则两个 runner 会互相覆盖对方的缓存
+          cache-from: type=gha,scope=${{ matrix.arch }}
+          cache-to: type=gha,mode=max,scope=${{ matrix.arch }}
+          provenance: false
+
+      - name: 记下这个架构的 digest
+        if: github.event_name != 'pull_request'
+        env:
+          DIGEST: ${{ steps.build.outputs.digest }}
+        run: |
+          mkdir -p /tmp/digests
+          # 文件名取 digest 去掉 sha256: 前缀的部分，两个架构不会撞名
+          touch "/tmp/digests/${DIGEST#sha256:}"
+
+      - name: 上传 digest
+        if: github.event_name != 'pull_request'
+        uses: actions/upload-artifact@v4
+        with:
+          name: digest-${{ matrix.arch }}
+          path: /tmp/digests/*
+          if-no-files-found: error
+          retention-days: 1
+
+  merge:
+    name: 合成多架构 manifest
+    runs-on: ubuntu-24.04
+    needs: [build]
+    if: github.event_name != 'pull_request'
+    permissions:
+      contents: read
+      packages: write
+
+    steps:
+      - name: 取回各架构的 digest
+        uses: actions/download-artifact@v4
+        with:
+          path: /tmp/digests
+          pattern: digest-*
+          merge-multiple: true
+
+      - name: 准备 buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: 登录 GHCR
+        uses: docker/login-action@v3
+        with:
+          registry: ${{ env.REGISTRY }}
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: 生成标签
+        id: meta
+        uses: docker/metadata-action@v5
+        with:
+          images: ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}
+          # latest 只跟着默认分支走；打 tag 时额外给出语义化版本号
+          tags: |
+            type=ref,event=branch
+            type=semver,pattern={{version}}
+            type=semver,pattern={{major}}.{{minor}}
+            type=sha,format=short
+            type=raw,value=latest,enable={{is_default_branch}}
+
+      # DOCKER_METADATA_OUTPUT_JSON 是上一步自己导出的环境变量。用它而不是把
+      # ${{ }} 插值进 shell —— 插值出来的内容会先被 shell 解析一遍，标签里
+      # 一个引号就能让整条命令变成别的东西。
+      - name: 把两个 digest 合成一个 manifest
+        working-directory: /tmp/digests
+        run: |
+          docker buildx imagetools create \
+            $(jq -cr '.tags | map("-t " + .) | join(" ")' <<< "$DOCKER_METADATA_OUTPUT_JSON") \
+            $(printf '${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}@sha256:%s ' *)
+
+      - name: 检查合成结果
+        run: |
+          TAG="$(jq -cr '.tags[0]' <<< "$DOCKER_METADATA_OUTPUT_JSON")"
+          echo "已发布: $TAG"
+          docker buildx imagetools inspect "$TAG"
+
+      - name: 写进作业摘要
+        run: |
+          TAG="$(jq -cr '.tags[0]' <<< "$DOCKER_METADATA_OUTPUT_JSON")"
+          {
+            echo "## 镜像已发布"
+            echo
+            echo '```bash'
+            echo "docker run -d -p 8000:8000 \\"
+            echo "  -e ASTRA_API_KEY=sk-你的Kimi密钥 \\"
+            echo "  -v astramentor-data:/data \\"
+            echo "  $TAG"
+            echo '```'
+            echo
+            echo "架构：linux/amd64 + linux/arm64（docker 按本机架构自动选）"
+            echo
+            echo "打开 http://localhost:8000 即可使用。模型默认 Kimi K3、推理强度 low，"
+            echo "只有 \`ASTRA_API_KEY\` 必须自己填。"
+          } >> "$GITHUB_STEP_SUMMARY"

@@ -24,17 +24,22 @@ except ImportError:
 class APIConfig:
     """API配置类"""
 
-    # 模型提供商：gemini / zhipu
+    # 模型提供商：moonshot(kimi) / gemini / zhipu / qwen / 任意 OpenAI 兼容
+    #
+    # 默认一整套都指向 Kimi K3：部署时只需要给一个 ASTRA_API_KEY，其余
+    # 三项不用填。想换别的模型再覆盖对应变量即可。
     provider: str = field(
-        default_factory=lambda: os.getenv("ASTRA_PROVIDER", "gemini")
+        default_factory=lambda: os.getenv("ASTRA_PROVIDER", "moonshot")
     )
 
-    # API 端点地址
+    # API 端点地址（只到 /v1，不要追加 /chat/completions）
     api_endpoint: str = field(
-        default_factory=lambda: os.getenv("ASTRA_API_ENDPOINT", "http://127.0.0.1:8045")
+        default_factory=lambda: os.getenv(
+            "ASTRA_API_ENDPOINT", "https://api.moonshot.cn/v1"
+        )
     )
 
-    # API密钥（必须从环境变量读取）
+    # API密钥（必须从环境变量读取，代码与镜像里都不内置）
     api_key: str = field(default_factory=lambda: os.getenv("ASTRA_API_KEY", ""))
 
     # 传输方式
@@ -42,7 +47,14 @@ class APIConfig:
 
     # 默认模型
     model_name: str = field(
-        default_factory=lambda: os.getenv("ASTRA_MODEL_NAME", "gemini-3-flash-preview")
+        default_factory=lambda: os.getenv("ASTRA_MODEL_NAME", "kimi-k3")
+    )
+
+    # 推理强度，仅对支持它的模型生效（Kimi K3：low / high / max）。
+    # 默认 low：K3 关不掉思考，默认档是 max，一次星图生成能想上好几分钟，
+    # 教学场景里那点质量提升完全不值这个等待和 token。
+    reasoning_effort: str = field(
+        default_factory=lambda: os.getenv("ASTRA_REASONING_EFFORT", "low").strip().lower()
     )
 
     # Web Research（Google Search Grounding）开关

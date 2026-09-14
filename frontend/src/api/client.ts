@@ -2,7 +2,13 @@ import axios from 'axios';
 import type { ChatMessage, GraphData, LearnerState, EvaluationResult, GroundingSource, TeachingResponse, CourseCitation, KnowledgeScope, SessionSnapshot, SessionSummary } from '../types';
 import { ApiRequestError, toApiRequestError } from './errors';
 
-export const API_BASE_URL = 'http://127.0.0.1:8000/api';
+// 同源相对路径。写死 http://127.0.0.1:8000 的话，镜像一旦发布到别的主机或端口
+// （docker run -p 9000:8000、反向代理、局域网访问）前端就会去敲用户自己的
+// 8000 端口，页面能打开但所有接口全挂。
+//
+// 需要前后端分开部署时，构建期传 VITE_API_BASE_URL 指向后端地址即可；
+// 本地 npm run dev 由 vite 的 /api 代理转发到 127.0.0.1:8000。
+export const API_BASE_URL = import.meta.env.VITE_API_BASE_URL || '/api';
 
 export const client = axios.create({
     baseURL: API_BASE_URL,

@@ -10,8 +10,9 @@ SQLite，主键一律带上 ``owner_id``，并通过外键随账号级联删除�
 from __future__ import annotations
 
 import json
-from pathlib import Path
+import os
 import re
+from pathlib import Path
 from typing import Any
 
 from services.database import (
@@ -28,7 +29,11 @@ MAX_STATE_BYTES = 4 * 1024 * 1024
 MAX_DOCUMENT_BYTES = 32 * 1024 * 1024
 
 # 原始上传文件的根目录，其下按账号分子目录。
-UPLOAD_ROOT = Path("user_data") / "uploads"
+# 容器部署时数据库和上传件要一起放到挂载的卷上，所以这里和 ASTRA_DB_PATH
+# 一样支持用环境变量指定。
+UPLOAD_ROOT = Path(
+    os.getenv("ASTRA_UPLOAD_ROOT") or Path("user_data") / "uploads"
+)
 
 # owner_id 与 doc_id 都会被拼进上传目录路径，必须先收敛成不含分隔符、
 # 不含 ".." 的安全片段，否则一个 doc_id=../<别人的id>/<hash> 就能删掉别人的文件。

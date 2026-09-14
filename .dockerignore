@@ -1,0 +1,49 @@
+# 构建上下文越小，docker build 启动越快，也更不容易把本机的东西
+# （.env 里的 API Key、本地数据库）不小心烤进镜像。
+
+.git
+.gitignore
+.github
+
+# 本机数据：数据库、上传的 PDF。容器里走挂载的卷，绝不能带进镜像。
+user_data/
+test_data/
+
+# 密钥。镜像里配置一律走环境变量。
+.env
+.env.*
+!.env.example
+
+# 依赖与产物（镜像里自己装、自己构建）
+**/node_modules/
+**/dist/
+.venv/
+venv/
+**/__pycache__/
+**/*.py[cod]
+*.egg-info/
+build/
+dist/
+
+# 测试与开发产物
+.pytest_cache/
+.ruff_cache/
+.mypy_cache/
+htmlcov/
+.coverage
+coverage/
+
+# 编辑器 / 系统
+.vscode/
+.idea/
+.DS_Store
+Thumbs.db
+
+# 设计文档不进镜像
+docs/
+
+# 这里刻意不写 *.md：rag/courses/*/materials/ 下的 33 份教材就是 Markdown，
+# 是课程知识库的原料，必须进镜像。.dockerignore 的 * 虽然不跨 /，
+# 但这条规则一旦被谁改成 **/*.md，课程就会静默地少掉教材。
+#
+# 同理 rag/indexes/（随代码提交的 BM25 索引）也必须进镜像，别加进来。
