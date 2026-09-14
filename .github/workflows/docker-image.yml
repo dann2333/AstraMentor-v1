@@ -32,6 +32,8 @@ on:
 
 env:
   REGISTRY: ghcr.io
+  # 注意这里还带着仓库原本的大小写。容器镜像名只能是小写，所以每个作业
+  # 的第一步都会把它转成小写再覆盖掉（见「仓库名转小写」）。
   IMAGE_NAME: ${{ github.repository }}
 
 jobs:
@@ -53,6 +55,12 @@ jobs:
             arch: arm64
 
     steps:
+      - name: 仓库名转小写
+        # ghcr.io/dann2333/AstraMentor-v1 会被 registry 直接拒绝：
+        # "repository name must be lowercase"。写进 $GITHUB_ENV 覆盖上面的
+        # 工作流级变量，后面的步骤读到的就是小写版本。
+        run: echo "IMAGE_NAME=${GITHUB_REPOSITORY,,}" >> "$GITHUB_ENV"
+
       - name: 取出代码
         uses: actions/checkout@v4
 
@@ -74,6 +82,88 @@ jobs:
         uses: docker/metadata-action@v5
         with:
           images: ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}
+
+      # 先在本机把镜像装起来跑一遍，再决定要不要推。构建成功只说明
+      # Dockerfile 没写错，不代表容器能起来 —— 上一版就是构建全过、
+      # 推送那一步才炸。这一步跑在对应架构的原生 runner 上，所以 arm64
+      # 的运行期问题也能在这儿暴露出来。
+      - name: 构建到本地（供冒烟测试）
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          platforms: ${{ matrix.platform }}
+          load: true
+          tags: astramentor:smoke
+          cache-from: type=gha,scope=${{ matrix.arch }}
+          cache-to: type=gha,mode=max,scope=${{ matrix.arch }}
+          provenance: false
+
+      - name: 冒烟测试：容器真的能用吗
+        run: |
+          set -euo pipefail
+
+          # 刻意不给 ASTRA_API_KEY：要验的正是"没配 Key 也能起来、并且给出
+          # 一句能照着做的提示"这个部署首体验。
+          docker run -d --name smoke -p 18000:8000 astramentor:smoke
+
+          fail() { echo "::error::$1"; docker logs smoke || true; exit 1; }
+
+          echo "::group::等待服务就绪"
+          ready=0
+          for _ in $(seq 1 40); do
+            if curl -fsS --max-time 5 http://127.0.0.1:18000/api/courses > /dev/null 2>&1; then
+              ready=1; break
+            fi
+            sleep 3
+          done
+          echo "::endgroup::"
+          [ "$ready" = "1" ] || fail "40 次探活都没通"
+
+          # 1. 首页必须是前端页面，而不是 FastAPI 的 404
+          body=$(curl -fsS --max-time 10 http://127.0.0.1:18000/)
+          printf '%s' "$body" | grep -q 'id="root"' \
+            || fail "根路径没有返回前端页面（前端可能没进镜像）"
+
+          # 2. 页面引用的 JS 必须能取到，否则等于白屏
+          asset=$(printf '%s' "$body" | grep -o '/assets/index-[A-Za-z0-9_-]*\.js' | head -1 || true)
+          [ -n "$asset" ] || fail "页面里找不到 /assets/*.js 的引用"
+          curl -fsS --max-time 10 "http://127.0.0.1:18000$asset" > /dev/null \
+            || fail "取不到前端资源 $asset"
+
+          # 3. 挂了前端之后接口不能被盖掉
+          courses=$(curl -fsS --max-time 10 http://127.0.0.1:18000/api/courses) \
+            || fail "/api/courses 不通（静态挂载把路由盖住了？）"
+
+          # 4. 课程知识库的教材与索引要在镜像里，不能是空列表
+          count=$(printf '%s' "$courses" | jq '((.courses // .) | length)')
+          [ "${count:-0}" -ge 1 ] || fail "课程列表是空的（rag/courses 或 rag/indexes 没进镜像）"
+          echo "课程数: $count"
+
+          # 5. 没配 Key 时要给 503 和一句人话，而不是 500
+          code=$(curl -s -o /tmp/nokey.json -w '%{http_code}' --max-time 20 \
+            -X POST http://127.0.0.1:18000/api/graph/generate \
+            -H 'Content-Type: application/json' \
+            -d '{"topic":"冒烟测试","complexity":1}')
+          [ "$code" = "503" ] \
+            || fail "缺少 API Key 时期望 503，实际 $code：$(cat /tmp/nokey.json)"
+          grep -q "ASTRA_API_KEY" /tmp/nokey.json \
+            || fail "503 的提示里没说该设哪个环境变量：$(cat /tmp/nokey.json)"
+
+          # 6. 必须是非 root
+          runas=$(docker exec smoke id -un)
+          [ "$runas" = "astra" ] || fail "容器不是以 astra 用户运行，而是 $runas"
+
+          # 7. 在线 IDE 的语言工具链在不在
+          for bin in python node gcc g++ go javac; do
+            docker exec smoke sh -c "command -v $bin > /dev/null" \
+              || fail "镜像里缺少 $bin，在线 IDE 的对应语言用不了"
+          done
+
+          echo "冒烟测试全部通过（${{ matrix.platform }}）"
+
+      - name: 收尾
+        if: always()
+        run: docker rm -f smoke > /dev/null 2>&1 || true
 
       - name: 构建并按 digest 推送
         id: build
@@ -119,6 +209,12 @@ jobs:
       packages: write
 
     steps:
+      - name: 仓库名转小写
+        # ghcr.io/dann2333/AstraMentor-v1 会被 registry 直接拒绝：
+        # "repository name must be lowercase"。写进 $GITHUB_ENV 覆盖上面的
+        # 工作流级变量，后面的步骤读到的就是小写版本。
+        run: echo "IMAGE_NAME=${GITHUB_REPOSITORY,,}" >> "$GITHUB_ENV"
+
       - name: 取回各架构的 digest
         uses: actions/download-artifact@v4
         with:
