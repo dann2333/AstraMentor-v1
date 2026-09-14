@@ -24,17 +24,22 @@ except ImportError:
 class APIConfig:
     """API配置类"""
 
-    # 模型提供商：gemini / zhipu
+    # 模型提供商：moonshot(kimi) / gemini / zhipu / qwen / 任意 OpenAI 兼容
+    #
+    # 默认一整套都指向 Kimi K3：部署时只需要给一个 ASTRA_API_KEY，其余
+    # 三项不用填。想换别的模型再覆盖对应变量即可。
     provider: str = field(
-        default_factory=lambda: os.getenv("ASTRA_PROVIDER", "gemini")
+        default_factory=lambda: os.getenv("ASTRA_PROVIDER", "moonshot")
     )
 
-    # API 端点地址
+    # API 端点地址（只到 /v1，不要追加 /chat/completions）
     api_endpoint: str = field(
-        default_factory=lambda: os.getenv("ASTRA_API_ENDPOINT", "http://127.0.0.1:8045")
+        default_factory=lambda: os.getenv(
+            "ASTRA_API_ENDPOINT", "https://api.moonshot.cn/v1"
+        )
     )
 
-    # API密钥（必须从环境变量读取）
+    # API密钥（必须从环境变量读取，代码与镜像里都不内置）
     api_key: str = field(default_factory=lambda: os.getenv("ASTRA_API_KEY", ""))
 
     # 传输方式
@@ -42,7 +47,14 @@ class APIConfig:
 
     # 默认模型
     model_name: str = field(
-        default_factory=lambda: os.getenv("ASTRA_MODEL_NAME", "gemini-3-flash-preview")
+        default_factory=lambda: os.getenv("ASTRA_MODEL_NAME", "kimi-k3")
+    )
+
+    # 推理强度，仅对支持它的模型生效（Kimi K3：low / high / max）。
+    # 默认 low：K3 关不掉思考，默认档是 max，一次星图生成能想上好几分钟，
+    # 教学场景里那点质量提升完全不值这个等待和 token。
+    reasoning_effort: str = field(
+        default_factory=lambda: os.getenv("ASTRA_REASONING_EFFORT", "low").strip().lower()
     )
 
     # Web Research（Google Search Grounding）开关
@@ -112,6 +124,43 @@ class AuthConfig:
 
 
 @dataclass
+class ServerConfig:
+    """对外暴露相关的配置。
+
+    这几项的默认值是按"本机自己用"定的。开到公网时必须显式收紧——
+    README 的公网部署一节列了完整清单。
+    """
+
+    # 在线 IDE 的代码执行开关。
+    #
+    # CodeRunner 是直接 subprocess 跑使用者提交的代码，没有沙箱：能读到
+    # 容器里的一切（SQLite 库、上传的文件、环境变量里的 API Key），也能
+    # 往外发网络请求。本机自己用没问题，挂到公网上就是把一个 RCE 接口
+    # 摆在门口，所以公网部署一律设成 false。
+    code_runner_enabled: bool = field(
+        default_factory=lambda: os.getenv("ASTRA_CODE_RUNNER_ENABLED", "true").lower()
+        != "false"
+    )
+
+    # 允许跨域访问的来源，逗号分隔。默认 "*" 只适合本机开发。
+    # 单容器部署时前后端同源，这里填自己的域名即可（或干脆留空）。
+    cors_origins: list[str] = field(
+        default_factory=lambda: [
+            origin.strip()
+            for origin in os.getenv("ASTRA_CORS_ORIGINS", "*").split(",")
+            if origin.strip()
+        ]
+    )
+
+    # 单次注册开关。公开部署又不想让任何人都能建号时设成 false，
+    # 已有账号照常登录。
+    registration_enabled: bool = field(
+        default_factory=lambda: os.getenv("ASTRA_REGISTRATION_ENABLED", "true").lower()
+        != "false"
+    )
+
+
+@dataclass
 class Config:
     """全局配置类"""
 
@@ -119,6 +168,7 @@ class Config:
     learning: LearningConfig = field(default_factory=LearningConfig)
     storage: StorageConfig = field(default_factory=StorageConfig)
     auth: AuthConfig = field(default_factory=AuthConfig)
+    server: ServerConfig = field(default_factory=ServerConfig)
 
 
 # 全局配置实例

@@ -1,0 +1,625 @@
+name: 构建 Docker 镜像
+
+# 产出一个同时支持 x86_64 和 arm64 的镜像，推到 GHCR。
+#
+# 两架构分别在各自架构的原生 runner 上构建，最后合并成一个 manifest。
+# 没走 QEMU 交叉编译：arm64 模拟下装 Python 依赖能慢上十倍，而这个仓库是
+# 公开的，GitHub 的 arm64 runner 对公开仓库免费。
+#
+# 拉取：docker pull ghcr.io/<owner>/<repo>:latest
+#   —— Docker 会按本机架构自动挑对应的那一份。
+
+on:
+  push:
+    branches: [main]
+    tags: ['v*']
+    # 只跟镜像内容有关的改动才触发。注意不能写 '**/*.md'：
+    # rag/courses/*/materials/ 下的教材也是 Markdown，改了就该重新出镜像。
+    paths-ignore:
+      - 'docs/**'
+      - 'README.md'
+      - '.gitignore'
+  pull_request:
+    branches: [main]
+    paths:
+      - 'Dockerfile'
+      - '.dockerignore'
+      - 'requirements.txt'
+      - 'frontend/package-lock.json'
+      - '.github/workflows/docker-image.yml'
+  # 需要时手动点一下也能跑
+  workflow_dispatch:
+
+env:
+  REGISTRY: ghcr.io
+  # 注意这里还带着仓库原本的大小写。容器镜像名只能是小写，所以每个作业
+  # 的第一步都会把它转成小写再覆盖掉（见「仓库名转小写」）。
+  IMAGE_NAME: ${{ github.repository }}
+
+jobs:
+  build:
+    name: 构建 ${{ matrix.platform }}
+    runs-on: ${{ matrix.runner }}
+    permissions:
+      contents: read
+      packages: write
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - platform: linux/amd64
+            runner: ubuntu-24.04
+            arch: amd64
+          - platform: linux/arm64
+            runner: ubuntu-24.04-arm
+            arch: arm64
+
+    steps:
+      - name: 仓库名转小写
+        # ghcr.io/dann2333/AstraMentor-v1 会被 registry 直接拒绝：
+        # "repository name must be lowercase"。写进 $GITHUB_ENV 覆盖上面的
+        # 工作流级变量，后面的步骤读到的就是小写版本。
+        run: echo "IMAGE_NAME=${GITHUB_REPOSITORY,,}" >> "$GITHUB_ENV"
+
+      - name: 取出代码
+        uses: actions/checkout@v4
+
+      - name: 准备 buildx
+        uses: docker/setup-buildx-action@v3
+
+      # PR 阶段只构建不推送：fork 发来的 PR 拿不到 packages:write，
+      # 真去推会直接失败，而我们要的只是"Dockerfile 还能不能构建成功"。
+      - name: 登录 GHCR
+        if: github.event_name != 'pull_request'
+        uses: docker/login-action@v3
+        with:
+          registry: ${{ env.REGISTRY }}
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: 生成标签与标注
+        id: meta
+        uses: docker/metadata-action@v5
+        with:
+          images: ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}
+
+      # 先在本机把镜像装起来跑一遍，再决定要不要推。构建成功只说明
+      # Dockerfile 没写错，不代表容器能起来 —— 上一版就是构建全过、
+      # 推送那一步才炸。这一步跑在对应架构的原生 runner 上，所以 arm64
+      # 的运行期问题也能在这儿暴露出来。
+      - name: 构建到本地（供冒烟测试）
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          platforms: ${{ matrix.platform }}
+          load: true
+          tags: astramentor:smoke
+          cache-from: type=gha,scope=${{ matrix.arch }}
+          cache-to: type=gha,mode=max,scope=${{ matrix.arch }}
+          provenance: false
+
+      - name: 冒烟测试：容器真的能用吗
+        run: |
+          set -euo pipefail
+
+          # 刻意不给 ASTRA_API_KEY：要验的正是"没配 Key 也能起来、并且给出
+          # 一句能照着做的提示"这个部署首体验。
+          docker run -d --name smoke -p 18000:8000 astramentor:smoke
+
+          fail() { echo "::error::$1"; docker logs smoke || true; exit 1; }
+
+          echo "::group::等待服务就绪"
+          ready=0
+          for _ in $(seq 1 40); do
+            if curl -fsS --max-time 5 http://127.0.0.1:18000/api/courses > /dev/null 2>&1; then
+              ready=1; break
+            fi
+            sleep 3
+          done
+          echo "::endgroup::"
+          [ "$ready" = "1" ] || fail "40 次探活都没通"
+
+          # 1. 首页必须是前端页面，而不是 FastAPI 的 404
+          body=$(curl -fsS --max-time 10 http://127.0.0.1:18000/)
+          printf '%s' "$body" | grep -q 'id="root"' \
+            || fail "根路径没有返回前端页面（前端可能没进镜像）"
+
+          # 2. 页面引用的 JS 必须能取到，否则等于白屏
+          asset=$(printf '%s' "$body" | grep -o '/assets/index-[A-Za-z0-9_-]*\.js' | head -1 || true)
+          [ -n "$asset" ] || fail "页面里找不到 /assets/*.js 的引用"
+          curl -fsS --max-time 10 "http://127.0.0.1:18000$asset" > /dev/null \
+            || fail "取不到前端资源 $asset"
+
+          # 3. 挂了前端之后接口不能被盖掉
+          courses=$(curl -fsS --max-time 10 http://127.0.0.1:18000/api/courses) \
+            || fail "/api/courses 不通（静态挂载把路由盖住了？）"
+
+          # 4. 课程知识库的教材与索引要在镜像里，不能是空列表
+          count=$(printf '%s' "$courses" | jq '((.courses // .) | length)')
+          [ "${count:-0}" -ge 1 ] || fail "课程列表是空的（rag/courses 或 rag/indexes 没进镜像）"
+          echo "课程数: $count"
+
+          # 5. 没配 Key 时要给 503 和一句人话，而不是 500
+          code=$(curl -s -o /tmp/nokey.json -w '%{http_code}' --max-time 20 \
+            -X POST http://127.0.0.1:18000/api/graph/generate \
+            -H 'Content-Type: application/json' \
+            -d '{"topic":"冒烟测试","complexity":1}')
+          [ "$code" = "503" ] \
+            || fail "缺少 API Key 时期望 503，实际 $code：$(cat /tmp/nokey.json)"
+          grep -q "ASTRA_API_KEY" /tmp/nokey.json \
+            || fail "503 的提示里没说该设哪个环境变量：$(cat /tmp/nokey.json)"
+
+          # 6. 必须是非 root
+          runas=$(docker exec smoke id -un)
+          [ "$runas" = "astra" ] || fail "容器不是以 astra 用户运行，而是 $runas"
+
+          # 7. 在线 IDE 的语言工具链在不在
+          for bin in python node gcc g++ go javac; do
+            docker exec smoke sh -c "command -v $bin > /dev/null" \
+              || fail "镜像里缺少 $bin，在线 IDE 的对应语言用不了"
+          done
+
+          # 沙箱。这是这个镜像里最要紧的一块：在线 IDE 跑的是使用者提交的
+          # 代码。这里要钉住的**不是**"沙箱一定能用"，而是绝不能出现
+          # "代码跑起来了、但隔离没生效"。
+          #
+          # 沙箱靠内核的非特权 user namespace，而 Docker 的默认策略
+          # （Ubuntu 24.04 起的 AppArmor 限制）会把它挡住。那种环境下正确
+          # 行为是拒绝执行 —— 这同样算通过。
+          echo "::group::沙箱隔离验证"
+          # 用 python 生成 JSON 再交给 curl：直接在 YAML 的块标量里套 heredoc
+          # 会把缩进搞坏，用 -d '{...}' 又要给代码里的引号做两层转义。
+          probe() {
+            python3 -c 'import json,sys; open("/tmp/payload.json","w").write(json.dumps({"language":"python","code":sys.argv[1]}))' "$1"
+            curl -s --max-time 45 -X POST http://127.0.0.1:18000/api/run-code \
+              -H 'Content-Type: application/json' -d @/tmp/payload.json
+          }
+
+          probe "print('sandbox-ok')" > /tmp/s1.json
+          if grep -q "sandbox-ok" /tmp/s1.json; then
+            SANDBOX_WORKS=1
+            echo "沙箱可用，开始逐条验证隔离"
+          elif grep -q "沙箱不可用" /tmp/s1.json; then
+            SANDBOX_WORKS=0
+            echo "::warning::本环境的内核/容器策略不允许非特权 user namespace，沙箱起不来。服务已按预期拒绝执行代码（fail-closed）。要在这种环境启用在线 IDE，见 README 的说明。"
+          else
+            fail "既没跑通、也没给出「沙箱不可用」，回包异常：$(cat /tmp/s1.json)"
+          fi
+
+          if [ "$SANDBOX_WORKS" = "1" ]; then
+            # 逐条确认"没有沙箱时做得到"的事现在做不到。
+            # 判据统一是 exit_code 不为 0（读失败 / 连不上 / 写不了都会非 0）。
+            refuse() {
+              probe "$2" > /tmp/deny.json
+              if grep -q '"exit_code":0' /tmp/deny.json; then
+                fail "沙箱没挡住「$1」：$(cat /tmp/deny.json)"
+              fi
+              echo "  已挡住: $1"
+            }
+
+            refuse "读 /data 数据库" "print(open('/data/astramentor.db','rb').read(32))"
+            refuse "读 /app 应用代码" "print(open('/app/config.py').read())"
+            refuse "对外建立 TCP 连接" "import socket; socket.create_connection(('1.1.1.1',53),3)"
+            refuse "DNS 解析" "import socket; socket.gethostbyname('example.com')"
+            refuse "写沙箱根目录" "open('/pwned','w').write('x')"
+
+            # 模型密钥不该出现在沙箱的环境里
+            probe "import os; print('LEAKED' if os.environ.get('ASTRA_API_KEY') else 'no-key')" > /tmp/key.json
+            grep -q "LEAKED" /tmp/key.json && fail "API Key 漏进了沙箱：$(cat /tmp/key.json)"
+            echo "  已挡住: 读取 ASTRA_API_KEY"
+
+            # 工作目录必须可写，否则编译型语言直接没法用
+            probe "open('out.txt','w').write('x'); print(open('out.txt').read())" > /tmp/w.json
+            grep -q '"exit_code":0' /tmp/w.json \
+              || fail "沙箱工作目录不可写，编译型语言会全废：$(cat /tmp/w.json)"
+            echo "  仍可写: 沙箱工作目录"
+          else
+            # 沙箱不可用时，唯一要求是"什么都别执行"。
+            probe "open('/data/astramentor.db','rb').read(1)" > /tmp/nosb.json
+            grep -q '"exit_code":0' /tmp/nosb.json \
+              && fail "沙箱不可用却还是把代码跑了，这正是最危险的情形：$(cat /tmp/nosb.json)"
+            echo "  已确认: 沙箱不可用时一律拒绝执行，没有裸跑"
+          fi
+          echo "::endgroup::"
+
+          echo "冒烟测试全部通过（${{ matrix.platform }}）"
+
+      # docker-compose.yml 把根文件系统设成只读、丢掉所有 capability。
+      # 这些是"上线才生效"的配置，最容易出现的事故就是它写在文档里但其实
+      # 一开就起不来。这一轮照着 compose 的同一套参数再跑一遍，重点验证
+      # **沙箱在只读根 + cap_drop ALL + no-new-privileges 下依然能工作** ——
+      # bubblewrap 靠内核的非特权 user namespace，不需要任何 capability，
+      # 但这件事只有真跑一遍才算数。
+      - name: 冒烟测试：加固配置下沙箱仍然可用
+        run: |
+          set -euo pipefail
+
+          docker run -d --name hardened -p 18001:8000 \
+            --read-only \
+            --tmpfs /tmp:size=512m,mode=1777 \
+            --tmpfs /sandbox:size=512m,mode=1777,exec \
+            --tmpfs /home/astra/.cache:size=64m \
+            --cap-drop ALL \
+            --security-opt no-new-privileges:true \
+            --pids-limit 512 \
+            --memory 2g \
+            -e ASTRA_API_KEY=dummy-for-smoke \
+            astramentor:smoke
+
+          fail() { echo "::error::$1"; docker logs hardened || true; exit 1; }
+
+          echo "::group::等待服务就绪"
+          ready=0
+          for _ in $(seq 1 40); do
+            if curl -fsS --max-time 5 http://127.0.0.1:18001/api/courses > /dev/null 2>&1; then
+              ready=1; break
+            fi
+            sleep 3
+          done
+          echo "::endgroup::"
+          [ "$ready" = "1" ] || fail "只读根文件系统下服务起不来"
+
+          curl -fsS --max-time 10 http://127.0.0.1:18001/ | grep -q 'id="root"' \
+            || fail "加固模式下首页打不开"
+
+          probe() {
+            python3 -c 'import json,sys; open("/tmp/p2.json","w").write(json.dumps({"language":"python","code":sys.argv[1]}))' "$1"
+            curl -s --max-time 45 -X POST http://127.0.0.1:18001/api/run-code \
+              -H 'Content-Type: application/json' -d @/tmp/p2.json
+          }
+
+          # 沙箱在加固配置下要么正常工作，要么明确拒绝执行 ——
+          # 绝不能"沙箱起不来就裸跑"。
+          probe "print('hardened-sandbox-ok')" > /tmp/h1.json
+          if grep -q "hardened-sandbox-ok" /tmp/h1.json; then
+            echo "沙箱在只读根 + cap_drop ALL 下正常工作"
+            # 既然能跑，就得确认它真的还在隔离，而不是退化成了裸 subprocess
+            probe "print(open('/data/astramentor.db','rb').read(16))" > /tmp/h2.json
+            grep -q '"exit_code":0' /tmp/h2.json \
+              && fail "加固模式下沙箱失效了，能读到 /data：$(cat /tmp/h2.json)"
+            probe "import socket; socket.create_connection(('1.1.1.1',53),3)" > /tmp/h3.json
+            grep -q '"exit_code":0' /tmp/h3.json \
+              && fail "加固模式下沙箱失效了，还能联网：$(cat /tmp/h3.json)"
+            echo "隔离仍然成立（读不到 /data、连不上外网）"
+          elif grep -q "沙箱不可用" /tmp/h1.json; then
+            # 这种环境下 IDE 用不了，但重要的是它拒绝执行而不是裸跑。
+            echo "::warning::本环境的内核/策略不支持沙箱，服务已按预期拒绝执行代码"
+          else
+            fail "既没跑通、也没给出「沙箱不可用」，回包异常：$(cat /tmp/h1.json)"
+          fi
+
+          # 根文件系统真的是只读
+          if docker exec hardened sh -c 'touch /app/should-not-write' 2>/dev/null; then
+            fail "根文件系统并不是只读的"
+          fi
+
+          # /data 仍然可写，否则注册和学习记录都存不下
+          docker exec hardened sh -c 'touch /data/.w && rm /data/.w' \
+            || fail "/data 不可写，数据一点都存不下来"
+
+          echo "加固配置冒烟测试通过（${{ matrix.platform }}）"
+
+      # 上一步已经确认"沙箱起不来时服务会拒绝执行"。但那等于在线 IDE
+      # 直接不可用，所以还得知道：到底松开哪一项，bubblewrap 才能起来。
+      # 这一步把几种组合都真跑一遍，把答案写进作业摘要，供 README 和
+      # docker-compose.yml 取用。它只负责报告，任何结果都不判红。
+      - name: 探明沙箱需要的最小权限（只报告，不判红）
+        if: always()
+        run: |
+          # GitHub 用 `bash -e` 启动 step，所以这里必须显式 set +e ——
+          # 写 `set -uo pipefail` 是关不掉命令行上那个 -e 的。这一步的每种
+          # 组合都允许失败，只负责报告，不该因为某一格红就把构建判红。
+          set +e
+          set -u
+
+          # 直接调 services/sandbox.py 的 probe()，和线上判断沙箱可用性
+          # 走的是同一段代码，不另写一套。
+          PROBE_PY='from services.sandbox import probe; ok, detail = probe(); print(("OK" if ok else "FAIL") + " " + detail)'
+
+          # 基线固定为 docker-compose.yml 里那套加固参数，这样结论可以直接
+          # 抄进 compose。capability 已经实测过完全不是变量（NET_ADMIN、
+          # SYS_ADMIN、乃至 --privileged 都停在同一处），所以 cap_drop: ALL
+          # 全程保留，只沿着 LSM 策略这条线一档一档往上放。
+          HARD="--read-only --tmpfs /tmp:size=64m,mode=1777 --tmpfs /sandbox:size=64m,mode=1777,exec --cap-drop ALL --security-opt no-new-privileges:true"
+          S=" --security-opt seccomp=unconfined"
+          A=" --security-opt apparmor=unconfined"
+          P=" --security-opt systempaths=unconfined"
+
+          : > /tmp/perm.md
+          try() {
+            label="$1"; shift
+            flags="$1"
+            # shellcheck disable=SC2086 - flags 需要被拆成多个参数
+            out=$(docker run --rm -w /app $HARD $flags astramentor:smoke python -c "$PROBE_PY" 2>&1)
+            out=$(printf '%s' "$out" | tail -3 | tr '\n' ' ')
+            # 只留 bwrap 自己那句，后面那段中文提示每行都一样，没有信息量
+            brief=$(printf '%s' "$out" | sed 's/。在 Docker 里最常见.*//; s/^FAIL //')
+            case "$out" in
+              OK*) printf '  ✅ %s\n' "$label"
+                   echo "| $label | ✅ 可用 |" >> /tmp/perm.md ;;
+              *)   printf '  ❌ %-46s %s\n' "$label" "$brief"
+                   echo "| $label | ❌ $(printf '%s' "$brief" | cut -c1-120) |" >> /tmp/perm.md ;;
+            esac
+          }
+
+          # 一档一档往上放。每多放一项，bwrap 就往后走一步：
+          #   什么都不放   建不出 user namespace（Docker 默认 seccomp 挡的）
+          #   + seccomp    namespace 建出来了，卡在 mount / MS_SLAVE
+          #   + apparmor   mount 过了，卡在给 lo 配地址
+          #   + systempaths  Docker 给 /proc 做的 masked paths
+          ladder() {
+            try "什么都不额外放开"                        ""
+            try "+ seccomp"                               "$S"
+            try "+ seccomp + apparmor"                    "$S$A"
+            try "+ seccomp + apparmor + systempaths"      "$S$A$P"
+          }
+
+          echo "::group::宿主 sysctl 原样（$(sysctl -n kernel.apparmor_restrict_unprivileged_userns 2>/dev/null || echo '该项不存在')）"
+          echo "| **宿主 sysctl 原样** | |" >> /tmp/perm.md
+          ladder
+          echo "::endgroup::"
+
+          # Ubuntu 23.10 起 kernel.apparmor_restrict_unprivileged_userns 默认为 1。
+          # runner 上有 sudo，所以把它置 0 再把同一条阶梯跑一遍，好分清"要改宿主"
+          # 和"改容器就够"这两种情形。
+          echo "::group::把宿主 sysctl 置 0 之后"
+          for key in kernel.apparmor_restrict_unprivileged_userns \
+                     kernel.apparmor_restrict_unprivileged_unconfined; do
+            before=$(sysctl -n "$key" 2>/dev/null || echo '不存在')
+            sudo sysctl -w "$key=0" > /dev/null 2>&1 \
+              && printf '  已置 0: %s（原值 %s）\n' "$key" "$before" \
+              || printf '  改不动: %s（原值 %s）\n' "$key" "$before"
+          done
+          echo "| **宿主 sysctl 置 0 之后** | |" >> /tmp/perm.md
+          ladder
+          sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=1 > /dev/null 2>&1 || true
+          echo "::endgroup::"
+
+          {
+            echo "### 沙箱权限探测（${{ matrix.platform }}）"
+            echo
+            echo "基线：\`$HARD\`（capability 已实测与结果无关，故全程 cap_drop ALL）"
+            echo
+            echo "| 组合 | bubblewrap |"
+            echo "| --- | --- |"
+            cat /tmp/perm.md
+            echo
+            echo "取最靠前的 ✅ 作为部署建议。全是 ❌ 说明这台宿主只能关掉在线 IDE（\`ASTRA_CODE_RUNNER_ENABLED=false\`），或者换 gVisor / Kata 这类运行时。"
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      # 前面那一步已经实测出沙箱可用的最小配置（两个架构一致）：宿主
+      # kernel.apparmor_restrict_unprivileged_userns=0，容器加 seccomp /
+      # apparmor / systempaths 三个 unconfined，cap_drop ALL 与只读根保留。
+      #
+      # 这一步就在那个配置下把隔离逐条跑一遍。和上面两轮不同，**这一步要求
+      # 沙箱必须可用**：它是唯一能真正验证"隔离成立"的配置，所以这里
+      # 沙箱起不来、或者哪一条没挡住，都该判红。
+      - name: 冒烟测试：沙箱可用配置下逐条验证隔离
+        run: |
+          set -euo pipefail
+
+          sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0 > /dev/null
+
+          docker run -d --name sbx -p 18002:8000 \
+            --read-only \
+            --tmpfs /tmp:size=512m,mode=1777 \
+            --tmpfs /sandbox:size=512m,mode=1777,exec \
+            --tmpfs /home/astra/.cache:size=64m \
+            --cap-drop ALL \
+            --security-opt no-new-privileges:true \
+            --security-opt seccomp=unconfined \
+            --security-opt apparmor=unconfined \
+            --security-opt systempaths=unconfined \
+            --pids-limit 512 \
+            --memory 2g \
+            -e ASTRA_API_KEY=dummy-for-smoke \
+            astramentor:smoke
+
+          fail() { echo "::error::$1"; docker logs sbx || true; exit 1; }
+
+          echo "::group::等待服务就绪"
+          ready=0
+          for _ in $(seq 1 40); do
+            if curl -fsS --max-time 5 http://127.0.0.1:18002/api/courses > /dev/null 2>&1; then
+              ready=1; break
+            fi
+            sleep 3
+          done
+          echo "::endgroup::"
+          [ "$ready" = "1" ] || fail "服务起不来"
+
+          run_code() {
+            python3 -c 'import json,sys; open("/tmp/p3.json","w").write(json.dumps({"language":sys.argv[1],"code":sys.argv[2]}))' "$1" "$2"
+            curl -s --max-time 90 -X POST http://127.0.0.1:18002/api/run-code \
+              -H 'Content-Type: application/json' -d @/tmp/p3.json
+          }
+          probe() { run_code python "$1"; }
+
+          # 0. 沙箱必须真的起来了，否则下面每一条都是空验
+          probe "print('sbx-ok')" > /tmp/x0.json
+          grep -q "sbx-ok" /tmp/x0.json \
+            || fail "这套配置下沙箱仍然起不来，隔离无从验证：$(cat /tmp/x0.json)"
+          echo "沙箱可用，开始逐条验证"
+
+          # 1. 没有沙箱时做得到的事，现在必须做不到
+          echo "::group::越狱尝试"
+          refuse() {
+            probe "$2" > /tmp/deny.json
+            if grep -q '"exit_code":0' /tmp/deny.json; then
+              fail "沙箱没挡住「$1」：$(cat /tmp/deny.json)"
+            fi
+            echo "  已挡住: $1"
+          }
+          refuse "读 /data 数据库"     "print(open('/data/astramentor.db','rb').read(32))"
+          refuse "读 /app 应用代码"    "print(open('/app/config.py').read())"
+          refuse "列出 /app"           "import os; print(os.listdir('/app'))"
+          refuse "读 /data/uploads"    "import os; print(os.listdir('/data/uploads'))"
+          refuse "对外建立 TCP 连接"   "import socket; socket.create_connection(('1.1.1.1',53),3)"
+          refuse "DNS 解析"            "import socket; socket.gethostbyname('example.com')"
+          refuse "写沙箱根目录"        "open('/pwned','w').write('x')"
+          refuse "写 /usr"             "open('/usr/pwned','w').write('x')"
+          echo "::endgroup::"
+
+          # 2. 模型密钥不该出现在沙箱的环境里（这条判据是"出现即红"）
+          probe "import os; print('LEAKED' if any('ASTRA' in k for k in os.environ) else 'clean')" > /tmp/x1.json
+          if grep -q "LEAKED" /tmp/x1.json; then
+            fail "ASTRA_* 环境变量漏进了沙箱：$(cat /tmp/x1.json)"
+          fi
+          grep -q "clean" /tmp/x1.json || fail "环境变量检查没跑通：$(cat /tmp/x1.json)"
+          echo "已挡住: 读取 ASTRA_* 环境变量（含 API Key）"
+
+          # 3. 资源上限
+          echo "::group::资源上限"
+          probe "while True: pass" > /tmp/x2.json
+          grep -q '"exit_code":0' /tmp/x2.json && fail "死循环没有被超时干掉：$(cat /tmp/x2.json)"
+          echo "  已拦住: CPU 死循环"
+
+          probe "print('A'*10_000_000)" > /tmp/x3.json
+          [ "$(wc -c < /tmp/x3.json)" -lt 200000 ] \
+            || fail "输出没有被截断，回包 $(wc -c < /tmp/x3.json) 字节"
+          echo "  已截断: 超长输出"
+          echo "::endgroup::"
+
+          # 4. 工作目录必须可写，否则编译型语言全废
+          probe "open('out.txt','w').write('x'); print(open('out.txt').read())" > /tmp/x4.json
+          grep -q '"exit_code":0' /tmp/x4.json \
+            || fail "沙箱工作目录不可写：$(cat /tmp/x4.json)"
+          echo "仍可写: 沙箱工作目录"
+
+          # 5. 六种语言都要能在沙箱里真的跑出结果
+          echo "::group::六种语言"
+          lang_ok() {
+            run_code "$1" "$2" > /tmp/lang.json
+            grep -q "$3" /tmp/lang.json || fail "$1 在沙箱里跑不出结果：$(cat /tmp/lang.json)"
+            echo "  ✅ $1"
+          }
+          # 换行用 bash 的 $'\n' 写，别在 YAML 块标量里放真的换行 ——
+          # 顶格的续行会把整个 workflow 的缩进搞坏。
+          lang_ok python     'print(6*7)' 42
+          lang_ok javascript 'console.log(6*7)' 42
+          lang_ok c          $'#include <stdio.h>\nint main(){printf("%d\\n",6*7);return 0;}' 42
+          lang_ok cpp        $'#include <iostream>\nint main(){std::cout<<6*7<<std::endl;return 0;}' 42
+          lang_ok go         $'import "fmt"\nfunc main(){fmt.Println(6*7)}' 42
+          lang_ok java       'public class Main{public static void main(String[] a){System.out.println(6*7);}}' 42
+          echo "::endgroup::"
+
+          echo "沙箱隔离验证全部通过（${{ matrix.platform }}）"
+
+      - name: 收尾
+        if: always()
+        run: docker rm -f smoke hardened sbx > /dev/null 2>&1 || true
+
+      - name: 构建并按 digest 推送
+        id: build
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          platforms: ${{ matrix.platform }}
+          labels: ${{ steps.meta.outputs.labels }}
+          # 这一步先不打人类可读的标签：两个架构各推一份同名标签会互相覆盖，
+          # 只能各推一个 digest，再由下面的 merge 作业合成一个 manifest。
+          outputs: |
+            type=image,name=${{ env.REGISTRY }}/${{ env.IMAGE_NAME }},push-by-digest=true,name-canonical=true,push=${{ github.event_name != 'pull_request' }}
+          # 按架构分开缓存，否则两个 runner 会互相覆盖对方的缓存
+          cache-from: type=gha,scope=${{ matrix.arch }}
+          cache-to: type=gha,mode=max,scope=${{ matrix.arch }}
+          provenance: false
+
+      - name: 记下这个架构的 digest
+        if: github.event_name != 'pull_request'
+        env:
+          DIGEST: ${{ steps.build.outputs.digest }}
+        run: |
+          mkdir -p /tmp/digests
+          # 文件名取 digest 去掉 sha256: 前缀的部分，两个架构不会撞名
+          touch "/tmp/digests/${DIGEST#sha256:}"
+
+      - name: 上传 digest
+        if: github.event_name != 'pull_request'
+        uses: actions/upload-artifact@v4
+        with:
+          name: digest-${{ matrix.arch }}
+          path: /tmp/digests/*
+          if-no-files-found: error
+          retention-days: 1
+
+  merge:
+    name: 合成多架构 manifest
+    runs-on: ubuntu-24.04
+    needs: [build]
+    if: github.event_name != 'pull_request'
+    permissions:
+      contents: read
+      packages: write
+
+    steps:
+      - name: 仓库名转小写
+        # ghcr.io/dann2333/AstraMentor-v1 会被 registry 直接拒绝：
+        # "repository name must be lowercase"。写进 $GITHUB_ENV 覆盖上面的
+        # 工作流级变量，后面的步骤读到的就是小写版本。
+        run: echo "IMAGE_NAME=${GITHUB_REPOSITORY,,}" >> "$GITHUB_ENV"
+
+      - name: 取回各架构的 digest
+        uses: actions/download-artifact@v4
+        with:
+          path: /tmp/digests
+          pattern: digest-*
+          merge-multiple: true
+
+      - name: 准备 buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: 登录 GHCR
+        uses: docker/login-action@v3
+        with:
+          registry: ${{ env.REGISTRY }}
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: 生成标签
+        id: meta
+        uses: docker/metadata-action@v5
+        with:
+          images: ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}
+          # latest 只跟着默认分支走；打 tag 时额外给出语义化版本号
+          tags: |
+            type=ref,event=branch
+            type=semver,pattern={{version}}
+            type=semver,pattern={{major}}.{{minor}}
+            type=sha,format=short
+            type=raw,value=latest,enable={{is_default_branch}}
+
+      # DOCKER_METADATA_OUTPUT_JSON 是上一步自己导出的环境变量。用它而不是把
+      # ${{ }} 插值进 shell —— 插值出来的内容会先被 shell 解析一遍，标签里
+      # 一个引号就能让整条命令变成别的东西。
+      - name: 把两个 digest 合成一个 manifest
+        working-directory: /tmp/digests
+        run: |
+          docker buildx imagetools create \
+            $(jq -cr '.tags | map("-t " + .) | join(" ")' <<< "$DOCKER_METADATA_OUTPUT_JSON") \
+            $(printf '${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}@sha256:%s ' *)
+
+      - name: 检查合成结果
+        run: |
+          TAG="$(jq -cr '.tags[0]' <<< "$DOCKER_METADATA_OUTPUT_JSON")"
+          echo "已发布: $TAG"
+          docker buildx imagetools inspect "$TAG"
+
+      - name: 写进作业摘要
+        run: |
+          TAG="$(jq -cr '.tags[0]' <<< "$DOCKER_METADATA_OUTPUT_JSON")"
+          {
+            echo "## 镜像已发布"
+            echo
+            echo '```bash'
+            echo "docker run -d -p 8000:8000 \\"
+            echo "  -e ASTRA_API_KEY=sk-你的Kimi密钥 \\"
+            echo "  -v astramentor-data:/data \\"
+            echo "  $TAG"
+            echo '```'
+            echo
+            echo "架构：linux/amd64 + linux/arm64（docker 按本机架构自动选）"
+            echo
+            echo "打开 http://localhost:8000 即可使用。模型默认 Kimi K3、推理强度 low，"
+            echo "只有 \`ASTRA_API_KEY\` 必须自己填。"
+          } >> "$GITHUB_STEP_SUMMARY"

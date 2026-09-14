@@ -15,7 +15,10 @@ from backend.classroom_api import admin_router, classroom_router
 from backend.assignment_api import assignment_router
 from rag.errors import CourseIndexNotReadyError
 from services.learning_store import PayloadTooLarge
+from utils.api_client import MissingAPIKey
+from config import get_config
 from services.legacy_import import import_legacy_data
+from backend.static_site import mount_frontend
 
 # NOTE: 配置日志级别，确保项目模块的 INFO 日志可见
 logging.basicConfig(
@@ -51,8 +54,53 @@ def _import_legacy_data_once() -> None:
         )
 
 
+def _log_model_config() -> None:
+    """启动时把模型配置打出来，并在缺 Key 时明确说一句。
+
+    镜像默认整套指向 Kimi K3，部署者只需要给一个 ASTRA_API_KEY。把这件事
+    写在启动日志的第一屏，比让人先点一下界面、撞到报错再去翻文档要省事。
+    """
+    api = get_config().api
+    logger.info(
+        "模型配置: provider=%s model=%s endpoint=%s reasoning_effort=%s",
+        api.provider,
+        api.model_name,
+        api.api_endpoint,
+        api.reasoning_effort,
+    )
+    if not api.api_key:
+        logger.warning(
+            "未检测到 ASTRA_API_KEY —— 页面能打开，但生成星图、讲解、出题都会"
+            "返回 503。设置该环境变量后重启即可"
+            "（Docker: docker run -e ASTRA_API_KEY=sk-... ...）。"
+        )
+
+
+def _log_sandbox_status() -> None:
+    """把代码沙箱的状态写进启动日志。
+
+    在线 IDE 跑的是使用者提交的代码，所以"沙箱到底在不在"必须一眼能看到，
+    而不是等谁点了运行、拿到一句拒绝才去翻文档。
+    """
+    from services import sandbox
+
+    if not get_config().server.code_runner_enabled:
+        logger.info("在线运行代码：已关闭（ASTRA_CODE_RUNNER_ENABLED=false）")
+        return
+
+    ok, detail = sandbox.probe()
+    if ok:
+        logger.info("在线运行代码：已启用，沙箱正常（%s）", detail)
+    else:
+        logger.warning(
+            "在线运行代码：已启用但沙箱不可用，所有执行请求都会被拒绝。%s", detail
+        )
+
+
 @asynccontextmanager
 async def lifespan(_app: FastAPI):
+    _log_model_config()
+    _log_sandbox_status()
     _import_legacy_data_once()
     yield
 
@@ -74,6 +122,18 @@ async def payload_too_large_handler(
     return JSONResponse(status_code=413, content={"detail": str(exc)})
 
 
+@app.exception_handler(MissingAPIKey)
+async def missing_api_key_handler(
+    _request: Request, exc: MissingAPIKey
+) -> JSONResponse:
+    """没配 Key 时给一句能照着做的话，而不是 500。
+
+    每个需要模型的接口都会在构造 APIClient 时撞上这个异常，所以在这里兜一次
+    就够了。用 503 而不是 500：服务本身是好的，缺的是一项配置，补上重启即可。
+    """
+    return JSONResponse(status_code=503, content={"detail": str(exc)})
+
+
 @app.exception_handler(CourseIndexNotReadyError)
 async def course_index_not_ready_handler(
     _request: Request, exc: CourseIndexNotReadyError
@@ -81,11 +141,16 @@ async def course_index_not_ready_handler(
     """Expose one stable recovery contract for all course-mode endpoints."""
     return JSONResponse(status_code=409, content={"detail": exc.to_detail()})
 
-# Configure CORS
+# 跨域。单容器部署时前端和 API 同源，本来不需要放开跨域；这里保留配置
+# 是为了前后端分开部署的场景。默认 "*" 只适合本机开发，公网部署应该用
+# ASTRA_CORS_ORIGINS 填上自己的域名。
+_cors_origins = get_config().server.cors_origins
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],  # For development, allow all origins
-    allow_credentials=True,
+    allow_origins=_cors_origins,
+    # 令牌是放在请求头里的 Bearer，不依赖 cookie。配了具体域名之后就没必要
+    # 再让浏览器带凭证跨域了，少一条可被利用的路径。
+    allow_credentials="*" not in _cors_origins,
     allow_methods=["*"],
     allow_headers=["*"],
 )
@@ -99,6 +164,11 @@ app.include_router(user_data_router, prefix="/api")
 app.include_router(classroom_router, prefix="/api")
 app.include_router(assignment_router, prefix="/api")
 app.include_router(admin_router, prefix="/api")
+
+# 前端挂在最后：`/` 上的 Mount 会匹配一切路径，放在路由之前会把 /api 和
+# /docs 一起盖掉。仓库里默认没有 frontend/dist，所以这行在开发和测试环境
+# 是空操作。
+mount_frontend(app)
 
 if __name__ == "__main__":
     import uvicorn

@@ -193,7 +193,335 @@ graph TD
 
 ---
 
+## 🐳 用 Docker 跑（推荐，一条命令）
+
+镜像里已经包含前端、后端、课程知识库索引和在线 IDE 的语言工具链，
+一个容器、一个端口就能用。模型默认就是 **Kimi K3、推理强度 low**，
+所以**唯一需要你填的是 API Key**。
+
+```bash
+docker run -d --name astramentor \
+  -p 8000:8000 \
+  -e ASTRA_API_KEY=sk-你的Kimi密钥 \
+  -v astramentor-data:/data \
+  ghcr.io/dann2333/astramentor-v1:latest
+```
+
+打开 <http://localhost:8000> 即可。
+
+Key 在 [Kimi 开放平台](https://platform.moonshot.cn/console/api-keys) 创建。
+K3 是旗舰模型，需要先充值（最低 10 元）解锁，新用户代金券不能用于 K3。
+
+> 没填 Key 时页面照样能打开，只是生成星图/讲解/出题会返回一句
+> "还没配置模型 API Key" 的提示，补上环境变量重启即可。
+
+### 或者用 docker compose
+
+```bash
+echo 'ASTRA_API_KEY=sk-你的Kimi密钥' > .env
+docker compose up -d
+```
+
+### 镜像说明
+
+| 项目 | 说明 |
+| --- | --- |
+| 架构 | `linux/amd64` 与 `linux/arm64`（含 Apple Silicon、树莓派 4/5、各家 ARM 云主机），`docker pull` 会按本机架构自动选 |
+| 端口 | `8000`，仅 HTTP。页面和 `/api` 同一个端口，没有跨域问题；HTTPS 交给你自己的反代 |
+| 数据 | 挂 `/data`：SQLite 库和上传的 PDF 都在里面，容器重建不丢 |
+| 用户 | 非 root（uid 10001） |
+| 健康检查 | 内置，`docker ps` 能直接看到 healthy |
+
+可选的环境变量（都有默认值，一般不用动）：
+
+| 变量 | 默认值 | 说明 |
+| --- | --- | --- |
+| `ASTRA_API_KEY` | 无，**必填** | 模型密钥 |
+| `ASTRA_PROVIDER` | `moonshot` | 换模型厂商：`gemini` / `zhipu` / `qwen` / 任意 OpenAI 兼容 |
+| `ASTRA_API_ENDPOINT` | `https://api.moonshot.cn/v1` | API 根地址，只到 `/v1` |
+| `ASTRA_MODEL_NAME` | `kimi-k3` | 模型名 |
+| `ASTRA_REASONING_EFFORT` | `low` | K3 的推理强度，可选 `low` / `high` / `max` |
+| `ASTRA_ALLOW_ANONYMOUS` | `true` | 设为 `false` 则强制全站登录 |
+| `ASTRA_WEB_SEARCH_ENABLED` | `true` | 关闭联网搜索 |
+
+### 开放到公网
+
+只提供 HTTP，HTTPS 和域名交给你自己的反代。`uvicorn` 已经带了
+`--proxy-headers`，会正确识别 `X-Forwarded-For` / `X-Forwarded-Proto`。
+
+```bash
+git clone https://github.com/dann2333/AstraMentor-v1.git
+cd AstraMentor-v1
+
+echo 'ASTRA_API_KEY=sk-你的Kimi密钥' > .env
+docker compose up -d
+```
+
+只想让反代连、不想直接对外暴露端口的话，把 compose 里的 ports 改成：
+
+```yaml
+    ports:
+      - "127.0.0.1:8000:8000"
+```
+
+反代示例（nginx）。星图生成一次能跑几分钟，**读超时一定要放大**，
+否则表现出来就是"讲到一半没了"：
+
+```nginx
+server {
+    listen 80;
+    server_name astra.example.com;
+
+    location / {
+        proxy_pass http://127.0.0.1:8000;
+        proxy_set_header Host              $host;
+        proxy_set_header X-Real-IP         $remote_addr;
+        proxy_set_header X-Forwarded-For   $proxy_add_x_forwarded_for;
+        proxy_set_header X-Forwarded-Proto $scheme;
+
+        # 教学内容是 SSE 流式输出的：关掉缓冲，超时给足
+        proxy_buffering off;
+        proxy_read_timeout 600s;
+        proxy_send_timeout 600s;
+    }
+}
+```
+
+#### 第一个管理员
+
+镜像里**没有预置任何账号**，也没有默认密码 —— 不留后门。角色有三种：
+`student`（默认）、`teacher`、`admin`。注册时只能选前两种，`admin` 只能由已有
+管理员授予，否则谁注册都能自封管理员。
+
+于是全新部署需要一条命令把第一个管理员引导出来（能跑这条命令就已经拥有服务器
+和数据库文件了，不构成新的攻击面）：
+
+```bash
+docker compose exec astramentor python -m services.bootstrap_admin 你的用户名
+```
+
+账号不存在就顺手建出来（问一次密码），已存在就直接提升，重复跑没有副作用。
+容器里 stdin 不是终端时会生成一个随机强密码并打印出来 —— 记得登录后改掉。
+
+自己本机跑（不走 Docker）是同一条：
+
+```bash
+python -m services.bootstrap_admin 你的用户名
+```
+
+日常其实用不到管理员：注册时就能自己选 `teacher`，老师建班、发作业、批改都
+不需要 admin。admin 只在需要改别人角色的时候用得上，目前**还没有管理界面**，
+走接口：
+
+```bash
+# 先拿自己的 token
+TOKEN=$(curl -fsS -X POST http://127.0.0.1:8000/api/auth/login \
+  -H 'Content-Type: application/json' \
+   -d '{"username":"你的用户名","password":"你的密码"}' | jq -r .access_token)
+
+# 列出账号，找到目标的 id
+curl -fsS http://127.0.0.1:8000/api/admin/users -H "Authorization: Bearer $TOKEN"
+
+# 改角色（student / teacher / admin）
+curl -fsS -X PUT http://127.0.0.1:8000/api/admin/users/<id>/role \
+  -H "Authorization: Bearer $TOKEN" -H 'Content-Type: application/json' \
+  -d '{"role":"teacher"}'
+```
+
+> 默认 `ASTRA_ALLOW_ANONYMOUS=true`，也就是不登录也能用一个匿名访客空间，
+> 所以"先注册再提升"和"直接用这条命令建号"两条路都通。开到公网时建议把匿名
+> 关掉，见下一节。
+
+#### 开到公网前建议打开这两项
+
+```bash
+cat >> .env <<'ENV'
+# 整站强制登录，去掉匿名访客空间
+ASTRA_ALLOW_ANONYMOUS=false
+# 关掉自助注册，避免任何人都能建号
+ASTRA_REGISTRATION_ENABLED=false
+ENV
+docker compose up -d
+
+# 关了注册之后，新账号都在服务端建（见上面「第一个管理员」）
+docker compose exec astramentor python -m services.bootstrap_admin 你的用户名
+```
+
+`docker-compose.yml` 里已经预置好的：根文件系统只读、`cap_drop: ALL`、
+`no-new-privileges`、pids 与内存上限、登录失败 5 次锁 30 分钟。
+
+#### 防火墙
+
+```bash
+sudo ufw allow 22/tcp
+sudo ufw allow 80/tcp     # 你的反代
+sudo ufw enable
+```
+
+用了反代就不要把 8000 对外开放。云服务器的安全组同理。
+
+#### 备份
+
+数据都在 `astramentor-data` 卷里（SQLite 库 + 上传的 PDF）：
+
+```bash
+docker run --rm -v astramentor-data:/data:ro -v "$PWD":/backup \
+  alpine tar czf /backup/astramentor-$(date +%F).tar.gz -C /data .
+```
+
+恢复：
+
+```bash
+docker compose down
+docker run --rm -v astramentor-data:/data -v "$PWD":/backup \
+  alpine sh -c 'rm -rf /data/* && tar xzf /backup/astramentor-2026-01-01.tar.gz -C /data'
+docker compose up -d
+```
+
+#### 升级
+
+```bash
+docker compose pull && docker compose up -d
+```
+
+---
+
+## 🔒 在线 IDE 的代码沙箱
+
+在线 IDE 会执行使用者提交的代码，所以它跑在 **bubblewrap** 沙箱里
+（Flatpak 用的那套），和应用装在同一个镜像里。
+
+改造前是直接 `subprocess.run(["python", "-c", code])` —— 和后端同权限、
+同网络、同文件系统。一行 `open("/data/astramentor.db").read()` 就能拿走
+全部账号和密码散列，一行 `os.environ["ASTRA_API_KEY"]` 就能拿走模型密钥。
+
+现在隔离掉的东西：
+
+| | 做法 |
+| --- | --- |
+| 网络 | `--unshare-net`，沙箱里没有任何网络接口，连 DNS 都没有 |
+| 文件 | 只挂进只读的工具链（`/usr`、`/opt/venv` 等）+ 一个临时工作目录；`/app` 和 `/data` 不在视野里 |
+| 沙箱自己的根 | `--remount-ro /`，否则 bwrap 默认给的是可写 tmpfs，疯狂建文件就是一条吃内存的路 |
+| 环境变量 | `--clearenv`，只塞回 PATH / HOME / TMPDIR 等几项，**API Key 不在其中** |
+| 进程 | `--unshare-pid`，fork 炸弹困在自己的 pid 命名空间里，bwrap 一退全清 |
+| 资源 | `RLIMIT_CPU` / `FSIZE` / `NOFILE` / `NPROC`，外加墙钟超时 |
+| 输出 | 截断到 64KB，不会把几 MB 日志塞进一个 JSON 响应 |
+
+两个设计上的要点：
+
+- **不要 capability，也不要 docker socket。** bubblewrap 靠内核的非特权
+  user namespace 工作，不需要 `SYS_ADMIN`、不需要 `--privileged`、更不用挂
+  docker socket（挂 socket 等于把宿主机 root 交出去）。容器仍然是
+  `cap_drop: ALL` + `read_only`。
+- **失败就拒绝，不降级。** 沙箱探测不通时 `/api/run-code` 直接返回一句
+  明确的拒绝，**不会**退回到裸 subprocess。启动日志第一屏会写清沙箱状态。
+
+### 宿主机策略这一关
+
+不需要 capability，但**需要宿主机和 Docker 允许建立非特权 user namespace**。
+Docker 的默认策略正好一层层挡在这条路上，各发行版的默认值还不一样，所以这件事
+只能实测。CI 每次构建都会在两个架构上跑一遍这条阶梯，下面是在 GitHub 的
+Ubuntu 24.04 runner 上的结果（`cap_drop: ALL` + 只读根全程保留）：
+
+| 容器上放开的东西 | 宿主 sysctl = 1（Ubuntu 默认） | 宿主 sysctl = 0 |
+| --- | --- | --- |
+| 什么都不放开 | ❌ 建不出 user namespace | ❌ 同左 |
+| `+ seccomp=unconfined` | ❌ `mount / MS_SLAVE` | ❌ 同左 |
+| `+ apparmor=unconfined` | ❌ `loopback: RTM_NEWADDR` | ❌ `mount proc` |
+| `+ systempaths=unconfined` | ❌ `loopback: RTM_NEWADDR` | **✅ 可用** |
+
+（`sysctl` 指 `kernel.apparmor_restrict_unprivileged_userns`，Ubuntu 23.10 起
+默认为 1；Debian、CentOS 等没有这一项，阶梯往往在更低一档就通过。）
+
+三个可以直接拿走的结论：
+
+- **capability 完全不是变量。** 加 `NET_ADMIN`、`SYS_ADMIN`，乃至 `--privileged`，
+  都停在同一处。所以 `cap_drop: ALL` 该留着 —— 放开它换不来任何东西。
+- **每一档挡的是不同的东西**：`seccomp` 决定能不能建 user namespace，
+  `apparmor` 决定能不能 mount，`systempaths` 是 Docker 给 `/proc` 做的
+  masked paths，宿主 sysctl 决定新 namespace 里还剩多少权限。少任何一项都不行。
+- **沙箱的工作目录必须允许执行。** Docker 的 `--tmpfs` 默认带 `noexec`，工作
+  目录落在那样一块盘上时，解释器语言一切正常，而 C/C++/Go 全部报
+  `bwrap: execvp /work/main: Permission denied` —— 完全看不出是挂载选项的事。
+  所以镜像把工作目录放在单独的 `/sandbox`（`ASTRA_SANDBOX_SCRATCH`），
+  `docker-compose.yml` 给它挂一块 `exec` 的 tmpfs，`/tmp` 则继续保持 `noexec`。
+- 沙箱起不来的期间，`/api/run-code` 一直是明确拒绝执行，不会裸跑。
+
+#### 要开在线 IDE
+
+先在自己的机器上测一遍，别照抄上面的表（你的发行版可能更松）：
+
+```bash
+bash scripts/check-sandbox.sh
+# 用本地构建的镜像：bash scripts/check-sandbox.sh astramentor:local
+```
+
+它从"什么都不放开"一路试到"三项都 unconfined"，直接打印出最小可用的那一档
+对应的 `security_opt` 该怎么写。如果一档都不通，而机器上有
+`kernel.apparmor_restrict_unprivileged_userns` 这一项，放开它再跑一次：
+
+```bash
+sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0
+echo 'kernel.apparmor_restrict_unprivileged_userns=0' | sudo tee /etc/sysctl.d/99-astramentor.conf
+```
+
+然后按脚本给的结论去掉 `docker-compose.yml` 里对应几行的注释（文件里已经留好），
+`docker compose up -d` 即可。
+
+这些 flag 放开的是**外层容器**的 LSM 约束，换来的是提交上来的代码被关进内层
+沙箱 —— 值不值得自己判断。还是不通，说明这台机器上在线 IDE 用不了：要么关掉
+它，要么换 gVisor（`runsc`）、Kata 这类运行时来跑，而不是一路放开到
+`--privileged`（那等于拿宿主机换一个功能）。
+
+不需要这个功能就整个关掉：
+
+```bash
+echo 'ASTRA_CODE_RUNNER_ENABLED=false' >> .env
+docker compose up -d
+```
+
+隔离效果有测试钉着（`tests/test_sandbox.py`），每次构建镜像时 CI 也会在
+两个架构上真跑一遍：读 `/data`、读 `/app`、拿 API Key、联网、DNS、写沙箱
+根目录——逐条确认都被挡住，同时确认正常代码和六种语言都还能跑。
+
+> CI 里一共三轮，两个架构各跑一遍：默认配置和 compose 的加固配置下，确认
+> "要么隔离成立、要么什么都没执行"；最后一轮切到上面那套实测出来的可用配置，
+> 在沙箱真的起来的前提下逐条验证隔离（读 /data、列 /app、读上传目录、TCP、
+> DNS、写沙箱根、写 /usr、拿 ASTRA_* 环境变量、死循环、超长输出），并确认
+> 六种语言都还能跑出正确结果。这一轮沙箱起不来就判红 —— 它是唯一能真正验证
+> 隔离的配置。
+
+---
+
+### 自己构建
+
+```bash
+# 只出当前机器的架构
+docker build -t astramentor .
+
+# 出多架构镜像并推送
+docker buildx build --platform linux/amd64,linux/arm64 \
+  -t ghcr.io/<你的账号>/astramentor-v1:latest --push .
+
+# 不需要在线 IDE 的话可以省掉沙箱和 Go/JDK/GCC，镜像小一半以上
+docker build --build-arg WITH_IDE_TOOLCHAIN=false -t astramentor:slim .
+```
+
+推送到 `main` 或打 `v*` 标签时，`.github/workflows/docker-image.yml`
+会在原生 amd64 / arm64 runner 上各构建一份，再合成一个多架构 manifest
+推到 GHCR，不需要配置任何 Secret（用的是 Actions 自带的 `GITHUB_TOKEN`）。
+
+> GHCR 上的包首次推送默认是私有的。想让别人直接 `docker pull`，
+> 去仓库的 Packages 页面把 astramentor-v1 的可见性改成 public。
+
+> 在线 IDE 会在容器里执行使用者提交的代码，这部分跑在 bubblewrap 沙箱里，
+> 详见下面「在线 IDE 的代码沙箱」一节。
+
+---
+
 ## 🚀 快速开始 (Quick Start)
+
+> 想跳过环境搭建，直接看上面的 Docker 一条命令。下面是源码开发的步骤。
 
 ### 前置要求
 
