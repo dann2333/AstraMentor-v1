@@ -54,13 +54,21 @@ RUN pip install --no-cache-dir --upgrade pip \
 # ----------------------------------------------------------------- 运行镜像
 FROM python:3.11-slim-bookworm AS runtime
 
-# 在线 IDE 会 fork 出子进程编译/运行用户代码，语言的工具链得在镜像里。
-#   - node        JavaScript
-#   - gcc / g++   C / C++
-#   - golang-go   Go
-#   - JRE + JDK   Java
+# 在线 IDE 会 fork 出子进程编译/运行用户代码，所以镜像里要带：
+#
+#   bubblewrap    沙箱。使用者的代码一律关在里面跑：没有网络、看不到
+#                 /app 和 /data、环境变量清空。它靠内核的非特权 user
+#                 namespace 工作，**不需要**给容器加任何 capability，
+#                 所以能和应用装在同一个镜像里，不用起第二个容器、
+#                 更不用挂 docker socket。
+#   node          JavaScript
+#   gcc / g++     C / C++
+#   golang-go     Go
+#   JDK           Java
+#
 # Go 和 JDK 加起来占掉大半体积。不需要在线 IDE 的话构建时传
-# --build-arg WITH_IDE_TOOLCHAIN=false，镜像能小一半以上。
+# --build-arg WITH_IDE_TOOLCHAIN=false，镜像能小一半以上；那种镜像里
+# /api/run-code 会因为沙箱和工具链都不在而直接拒绝。
 ARG WITH_IDE_TOOLCHAIN=true
 
 RUN apt-get update && apt-get install -y --no-install-recommends \
@@ -68,6 +76,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
         curl \
     && if [ "$WITH_IDE_TOOLCHAIN" = "true" ]; then \
          apt-get install -y --no-install-recommends \
+           bubblewrap \
            nodejs \
            gcc \
            g++ \

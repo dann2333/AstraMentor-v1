@@ -1,37 +1,84 @@
-# 最省事的跑法（只需要一个 Key）：
-#   1. echo 'ASTRA_API_KEY=sk-你的Kimi密钥' > .env
-#   2. docker compose up -d
-#   3. 打开 http://localhost:8000
+# AstraMentor：一个镜像、一个容器、一个端口。
 #
-# 模型默认就是 Kimi K3（provider/endpoint/model/推理强度都写在镜像里了），
-# 想换别的模型在 .env 里覆盖 ASTRA_PROVIDER / ASTRA_API_ENDPOINT /
-# ASTRA_MODEL_NAME 即可。
+#   echo 'ASTRA_API_KEY=sk-你的Kimi密钥' > .env
+#   docker compose up -d
+#   打开 http://<这台机器的地址>:8000
 #
-# 想直接用 GitHub Actions 构建好的现成镜像，把 build 段删掉、
-# image 改成 ghcr.io/dann2333/astramentor-v1:latest。
+# 只提供 HTTP。要 HTTPS、自定义域名、限速之类的，在前面自己套一层
+# nginx / Caddy / Traefik 反代即可 —— uvicorn 已经开了 --proxy-headers，
+# 会正确识别反代传来的 X-Forwarded-For / X-Forwarded-Proto。
+#
+# 模型默认就是 Kimi K3、推理强度 low，所以 .env 里只需要一个 API Key。
+# 想换模型就覆盖 ASTRA_PROVIDER / ASTRA_API_ENDPOINT / ASTRA_MODEL_NAME。
 
 services:
   astramentor:
-    build:
-      context: .
-      # 本地构建只出当前机器的架构。要多架构镜像用 buildx，见 README。
-      dockerfile: Dockerfile
-    image: astramentor:local
+    # 想自己构建就把 image 换成 build: .
+    image: ghcr.io/dann2333/astramentor-v1:latest
     container_name: astramentor
     restart: unless-stopped
+
     ports:
+      # 只监听本机的话改成 "127.0.0.1:8000:8000"，然后让反代去连它
       - "8000:8000"
-    # .env 里只放 ASTRA_API_KEY 就够了；其余默认值都在镜像里
+
+    # .env 里放 ASTRA_API_KEY 就够了，其余默认值都在镜像里
     env_file:
       - .env
+
+    environment:
+      # ── 想开到公网时建议打开的两项 ──────────────────────
+      # 整站强制登录（默认 true，也就是允许匿名访客）
+      ASTRA_ALLOW_ANONYMOUS: ${ASTRA_ALLOW_ANONYMOUS:-true}
+      # 关掉自助注册后，用
+      #   docker compose exec astramentor python -m services.bootstrap_admin <用户名>
+      # 在服务端建号
+      ASTRA_REGISTRATION_ENABLED: ${ASTRA_REGISTRATION_ENABLED:-true}
+
+      # 撞库防护
+      ASTRA_AUTH_MAX_FAILED_ATTEMPTS: ${ASTRA_AUTH_MAX_FAILED_ATTEMPTS:-5}
+      ASTRA_AUTH_LOCKOUT_MINUTES: ${ASTRA_AUTH_LOCKOUT_MINUTES:-30}
+
+      # 在线 IDE 的代码执行。现在提交上来的代码一律关在 bubblewrap 沙箱里
+      # 跑（无网络、看不到 /app 和 /data、环境变量清空），所以可以放心开着。
+      # 沙箱起不来时服务会直接拒绝执行，不会偷偷降级成裸 subprocess。
+      ASTRA_CODE_RUNNER_ENABLED: ${ASTRA_CODE_RUNNER_ENABLED:-true}
+
     volumes:
+      # SQLite 库和上传的 PDF 都在这儿，容器重建不丢
       - astramentor-data:/data
-    # 在线 IDE 会执行使用者写的代码。这几项不是"安全沙箱"，只是把
-    # 容器逃逸和资源打满的门槛抬高一点；真要对外开放请另外做隔离。
+      # 课程索引要能重建（教材更新后前端会提示 stale）。用具名卷而不是直接
+      # 写镜像里的目录：Docker 会在卷为空时把镜像里那份已构建好的索引拷进来，
+      # 所以第一次启动就带着 5 门课的索引，之后重建也存得下。
+      - astramentor-indexes:/app/rag/indexes
+
+    # 根文件系统只读：应用只往上面两个卷和 /tmp 写。
+    read_only: true
+    tmpfs:
+      # 沙箱的工作目录、PDF 解析、jieba 分词缓存都落在这里。
+      # 这也顺带给沙箱的写入量定了上限。
+      - /tmp:size=512m,mode=1777
+      # 有些库会往 HOME 下的 cache 里写东西，给它一块内存盘兜着
+      - /home/astra/.cache:size=64m
+
     security_opt:
+      # 注意这里没有 seccomp=unconfined：沙箱用的是内核的非特权 user
+      # namespace，在 Docker 的默认 seccomp 策略下就能工作。
       - no-new-privileges:true
-    pids_limit: 256
+    cap_drop:
+      - ALL
+
+    # 沙箱里的 fork 炸弹困在自己的 pid 命名空间里，但容器级的上限再兜一层
+    pids_limit: 512
     mem_limit: 2g
+
+    healthcheck:
+      test: ["CMD", "curl", "-fsS", "http://127.0.0.1:8000/api/courses"]
+      interval: 30s
+      timeout: 5s
+      start_period: 30s
+      retries: 3
 
 volumes:
   astramentor-data:
+  astramentor-indexes:

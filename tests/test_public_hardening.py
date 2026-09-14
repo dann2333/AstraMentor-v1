@@ -1,8 +1,11 @@
-"""公网部署要靠的三个收紧开关。
+"""对外暴露相关的几个收紧开关。
 
-这三项在本机自己用的时候都是放开的，开到公网才必须关掉。既然是"忘了设就
-出事"的那类配置，就得有测试钉住它们真的生效——尤其是代码执行那个：
-CodeRunner 直接 subprocess 跑使用者提交的代码，没有沙箱，登录墙挡不住它。
+代码执行本身已经关在 bubblewrap 沙箱里了（见 tests/test_sandbox.py），
+这个开关是给"干脆不想提供在线 IDE"的部署留的总闸。另外两个（强制登录、
+CORS 白名单）则是开到公网时才需要拧紧的。
+
+既然都是"忘了设或者设了不生效就出事"的那类配置，就得有测试钉住它们真的
+起作用。
 """
 
 from __future__ import annotations
@@ -89,7 +92,7 @@ class CodeRunnerDisabledTests(_Isolated):
         self.assertIn("ASTRA_CODE_RUNNER_ENABLED", response.json()["detail"])
 
     def test_nothing_is_executed(self) -> None:
-        """403 必须在真正 fork 进程之前就返回。"""
+        """403 要在进沙箱之前就返回，别白起一趟进程。"""
         with unittest.mock.patch(
             "services.code_runner.CodeRunner.run_code"
         ) as run_code:

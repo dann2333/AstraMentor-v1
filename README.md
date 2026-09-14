@@ -227,7 +227,7 @@ docker compose up -d
 | 项目 | 说明 |
 | --- | --- |
 | 架构 | `linux/amd64` 与 `linux/arm64`（含 Apple Silicon、树莓派 4/5、各家 ARM 云主机），`docker pull` 会按本机架构自动选 |
-| 端口 | `8000`，页面和 `/api` 同一个端口，没有跨域问题 |
+| 端口 | `8000`，仅 HTTP。页面和 `/api` 同一个端口，没有跨域问题；HTTPS 交给你自己的反代 |
 | 数据 | 挂 `/data`：SQLite 库和上传的 PDF 都在里面，容器重建不丢 |
 | 用户 | 非 root（uid 10001） |
 | 健康检查 | 内置，`docker ps` 能直接看到 healthy |
@@ -246,124 +246,146 @@ docker compose up -d
 
 ### 开放到公网
 
-> ⚠️ **先读这段再往下做。** 这个项目带一个在线 IDE，会在容器里直接
-> `subprocess` 执行使用者提交的代码，**没有沙箱**。默认配置下开到公网，
-> 等于把一个远程代码执行接口挂在门口：任何人都能读走 SQLite 里的全部账号
-> 与密码散列、读 `/data/uploads`、从环境变量里拿走你的模型 API Key、扫你
-> 的内网。而且 `ASTRA_ALLOW_ANONYMOUS` 默认是 `true`，连登录都不需要。
->
-> 下面这套配置把这几条都关了。**不要只加个反向代理就上线。**
-
-需要准备：一台有公网 IP 的机器、一个域名（A 记录已指向它）、开放 80/443。
-证书由 Caddy 自动申请和续期，不用管 certbot。
+只提供 HTTP，HTTPS 和域名交给你自己的反代。`uvicorn` 已经带了
+`--proxy-headers`，会正确识别 `X-Forwarded-For` / `X-Forwarded-Proto`。
 
 ```bash
 git clone https://github.com/dann2333/AstraMentor-v1.git
-cd AstraMentor-v1/deploy
+cd AstraMentor-v1
 
-cp .env.public.example .env
-vi .env        # 填 ASTRA_DOMAIN / ASTRA_ACME_EMAIL / ASTRA_API_KEY
-
-docker compose -f docker-compose.public.yml up -d
+echo 'ASTRA_API_KEY=sk-你的Kimi密钥' > .env
+docker compose up -d
 ```
 
-打开 `https://你的域名`。看一眼状态和日志：
+只想让反代连、不想直接对外暴露端口的话，把 compose 里的 ports 改成：
+
+```yaml
+    ports:
+      - "127.0.0.1:8000:8000"
+```
+
+反代示例（nginx）。星图生成一次能跑几分钟，**读超时一定要放大**，
+否则表现出来就是"讲到一半没了"：
+
+```nginx
+server {
+    listen 80;
+    server_name astra.example.com;
+
+    location / {
+        proxy_pass http://127.0.0.1:8000;
+        proxy_set_header Host              $host;
+        proxy_set_header X-Real-IP         $remote_addr;
+        proxy_set_header X-Forwarded-For   $proxy_add_x_forwarded_for;
+        proxy_set_header X-Forwarded-Proto $scheme;
+
+        # 教学内容是 SSE 流式输出的：关掉缓冲，超时给足
+        proxy_buffering off;
+        proxy_read_timeout 600s;
+        proxy_send_timeout 600s;
+    }
+}
+```
+
+#### 开到公网前建议打开这两项
 
 ```bash
-docker compose -f docker-compose.public.yml ps
-docker compose -f docker-compose.public.yml logs -f
+cat >> .env <<'ENV'
+# 整站强制登录，去掉匿名访客空间
+ASTRA_ALLOW_ANONYMOUS=false
+# 关掉自助注册，避免任何人都能建号
+ASTRA_REGISTRATION_ENABLED=false
+ENV
+docker compose up -d
+
+# 关了注册之后在服务端建号（会提示输密码）
+docker compose exec astramentor python -m services.bootstrap_admin 你的用户名
 ```
 
-#### 这套配置到底关了什么
-
-| 项 | 值 | 为什么 |
-| --- | --- | --- |
-| `ASTRA_CODE_RUNNER_ENABLED` | `false` | **最要紧的一条。** 关掉在线运行代码，`/api/run-code` 直接返回 403。前端 IDE 还能写、能保存，只是不能在服务器上跑 |
-| `ASTRA_ALLOW_ANONYMOUS` | `false` | 整站强制登录，没有匿名访客空间 |
-| `ASTRA_CORS_ORIGINS` | `https://你的域名` | 只允许自己的域名跨域，并顺带关掉带凭证的跨域请求 |
-| `ASTRA_AUTH_MAX_FAILED_ATTEMPTS` | `5` | 撞库连续失败 5 次就锁 |
-| `ASTRA_AUTH_LOCKOUT_MINUTES` | `30` | 锁 30 分钟 |
-| `ASTRA_AUTH_TOKEN_TTL_HOURS` | `48` | 令牌有效期从 7 天收到 2 天 |
-| 容器不映射端口 | 只有 Caddy 听 80/443 | 应用只在内部网络可达，没有绕过 HTTPS 的路径 |
-| `read_only: true` | 根文件系统只读 | 只有 `/data`、`/tmp` 和课程索引卷可写 |
-| `cap_drop: ALL` | 丢掉所有 capability | |
-| `pids_limit` / `mem_limit` | 256 / 2g | 单个请求打不满整台机器 |
-
-HTTPS 头（HSTS、`X-Frame-Options`、CSP `frame-ancestors 'none'`）和登录接口
-限速在 `deploy/Caddyfile` 里。
-
-#### 只给自己用：关掉自助注册
-
-默认任何人都能注册。要改成只有你指定的账号能用：
-
-```bash
-# 1. 在 deploy/.env 里加一行
-echo 'ASTRA_REGISTRATION_ENABLED=false' >> .env
-docker compose -f docker-compose.public.yml up -d
-
-# 2. 在服务端建号（会提示你输密码）
-docker compose -f docker-compose.public.yml exec astramentor \
-  python -m services.bootstrap_admin 你的用户名
-```
-
-之后 `/api/auth/register` 返回 403，已有账号照常登录。
+`docker-compose.yml` 里已经预置好的：根文件系统只读、`cap_drop: ALL`、
+`no-new-privileges`、pids 与内存上限、登录失败 5 次锁 30 分钟。
 
 #### 防火墙
 
-只开必要的端口。应用端口（8000）**不要**对外开——它已经不映射到宿主机了。
-
 ```bash
-# Ubuntu / Debian
 sudo ufw allow 22/tcp
-sudo ufw allow 80/tcp
-sudo ufw allow 443/tcp
+sudo ufw allow 80/tcp     # 你的反代
 sudo ufw enable
-
-# CentOS / RHEL
-sudo firewall-cmd --permanent --add-service=http
-sudo firewall-cmd --permanent --add-service=https
-sudo firewall-cmd --reload
 ```
 
-云服务器还要在厂商控制台的安全组里同样只放 22/80/443。
+用了反代就不要把 8000 对外开放。云服务器的安全组同理。
 
 #### 备份
 
-数据都在 `astramentor-data` 这个卷里（SQLite 库 + 上传的 PDF）：
+数据都在 `astramentor-data` 卷里（SQLite 库 + 上传的 PDF）：
 
 ```bash
-docker run --rm \
-  -v astramentor-data:/data:ro \
-  -v "$PWD":/backup \
+docker run --rm -v astramentor-data:/data:ro -v "$PWD":/backup \
   alpine tar czf /backup/astramentor-$(date +%F).tar.gz -C /data .
 ```
 
 恢复：
 
 ```bash
-docker compose -f docker-compose.public.yml down
+docker compose down
 docker run --rm -v astramentor-data:/data -v "$PWD":/backup \
   alpine sh -c 'rm -rf /data/* && tar xzf /backup/astramentor-2026-01-01.tar.gz -C /data'
-docker compose -f docker-compose.public.yml up -d
+docker compose up -d
 ```
 
 #### 升级
 
 ```bash
-docker compose -f docker-compose.public.yml pull
-docker compose -f docker-compose.public.yml up -d
+docker compose pull && docker compose up -d
 ```
 
-#### 如果确实需要在公网开着在线 IDE
+---
 
-别直接把 `ASTRA_CODE_RUNNER_ENABLED` 打开。`CodeRunner` 只是 `subprocess`，
-没有任何隔离。要支持这个功能，得把代码执行挪出主容器：
+## 🔒 在线 IDE 的代码沙箱
 
-- 换成 gVisor（`runsc`）或 Kata 这类真沙箱运行时的独立容器，每次执行一起一销；
-- 或者接一个现成的在线判题 / 代码执行服务（Judge0、Piston 等）；
-- 并且给执行侧断网、限 CPU 与内存、限时。
+在线 IDE 会执行使用者提交的代码，所以它跑在 **bubblewrap** 沙箱里
+（Flatpak 用的那套），和应用装在同一个镜像里。
 
-在那之前，公网部署请保持 `false`。
+改造前是直接 `subprocess.run(["python", "-c", code])` —— 和后端同权限、
+同网络、同文件系统。一行 `open("/data/astramentor.db").read()` 就能拿走
+全部账号和密码散列，一行 `os.environ["ASTRA_API_KEY"]` 就能拿走模型密钥。
+
+现在隔离掉的东西：
+
+| | 做法 |
+| --- | --- |
+| 网络 | `--unshare-net`，沙箱里没有任何网络接口，连 DNS 都没有 |
+| 文件 | 只挂进只读的工具链（`/usr`、`/opt/venv` 等）+ 一个临时工作目录；`/app` 和 `/data` 不在视野里 |
+| 沙箱自己的根 | `--remount-ro /`，否则 bwrap 默认给的是可写 tmpfs，疯狂建文件就是一条吃内存的路 |
+| 环境变量 | `--clearenv`，只塞回 PATH / HOME / TMPDIR 等几项，**API Key 不在其中** |
+| 进程 | `--unshare-pid`，fork 炸弹困在自己的 pid 命名空间里，bwrap 一退全清 |
+| 资源 | `RLIMIT_CPU` / `FSIZE` / `NOFILE` / `NPROC`，外加墙钟超时 |
+| 输出 | 截断到 64KB，不会把几 MB 日志塞进一个 JSON 响应 |
+
+两个设计上的要点：
+
+- **不需要任何额外权限。** bubblewrap 靠内核的非特权 user namespace 工作，
+  所以容器仍然可以 `cap_drop: ALL` + `read_only`，不用 `--privileged`，
+  也不用挂 docker socket（挂 socket 等于把宿主机 root 交出去）。
+- **失败就拒绝，不降级。** 沙箱探测不通时 `/api/run-code` 直接返回一句
+  明确的拒绝，**不会**退回到裸 subprocess。启动日志第一屏会写清沙箱状态。
+
+不需要这个功能就整个关掉：
+
+```bash
+echo 'ASTRA_CODE_RUNNER_ENABLED=false' >> .env
+docker compose up -d
+```
+
+隔离效果有测试钉着（`tests/test_sandbox.py`），每次构建镜像时 CI 也会在
+两个架构上真跑一遍：读 `/data`、读 `/app`、拿 API Key、联网、DNS、写沙箱
+根目录——逐条确认都被挡住，同时确认正常代码和六种语言都还能跑。
+
+> 沙箱依赖内核的非特权 user namespace。极少数环境（很老的内核、宿主机
+> 关掉了该特性、或者外层套了更严的 seccomp/AppArmor）里会用不了，这时
+> 服务会拒绝执行代码并在日志里说明原因，而不是不声不响地裸跑。
+
+---
 
 ### 自己构建
 
@@ -375,7 +397,7 @@ docker build -t astramentor .
 docker buildx build --platform linux/amd64,linux/arm64 \
   -t ghcr.io/<你的账号>/astramentor-v1:latest --push .
 
-# 不需要在线 IDE 的话可以省掉 Go/JDK/GCC，镜像小一半以上
+# 不需要在线 IDE 的话可以省掉沙箱和 Go/JDK/GCC，镜像小一半以上
 docker build --build-arg WITH_IDE_TOOLCHAIN=false -t astramentor:slim .
 ```
 
@@ -386,9 +408,8 @@ docker build --build-arg WITH_IDE_TOOLCHAIN=false -t astramentor:slim .
 > GHCR 上的包首次推送默认是私有的。想让别人直接 `docker pull`，
 > 去仓库的 Packages 页面把 astramentor-v1 的可见性改成 public。
 
-> ⚠️ 在线 IDE 会在容器里执行使用者提交的代码。镜像已经以非 root 运行，
-> compose 里也加了 `no-new-privileges` 和内存/进程数上限，但这不是安全沙箱。
-> 要对公网开放，请再套一层容器隔离或换成专用的代码执行服务。
+> 在线 IDE 会在容器里执行使用者提交的代码，这部分跑在 bubblewrap 沙箱里，
+> 详见下面「在线 IDE 的代码沙箱」一节。
 
 ---
 

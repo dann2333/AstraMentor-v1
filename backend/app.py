@@ -68,18 +68,39 @@ def _log_model_config() -> None:
         api.api_endpoint,
         api.reasoning_effort,
     )
-    if api.api_key:
+    if not api.api_key:
+        logger.warning(
+            "未检测到 ASTRA_API_KEY —— 页面能打开，但生成星图、讲解、出题都会"
+            "返回 503。设置该环境变量后重启即可"
+            "（Docker: docker run -e ASTRA_API_KEY=sk-... ...）。"
+        )
+
+
+def _log_sandbox_status() -> None:
+    """把代码沙箱的状态写进启动日志。
+
+    在线 IDE 跑的是使用者提交的代码，所以"沙箱到底在不在"必须一眼能看到，
+    而不是等谁点了运行、拿到一句拒绝才去翻文档。
+    """
+    from services import sandbox
+
+    if not get_config().server.code_runner_enabled:
+        logger.info("在线运行代码：已关闭（ASTRA_CODE_RUNNER_ENABLED=false）")
         return
-    logger.warning(
-        "未检测到 ASTRA_API_KEY —— 页面能打开，但生成星图、讲解、出题都会"
-        "返回 503。设置该环境变量后重启即可"
-        "（Docker: docker run -e ASTRA_API_KEY=sk-... ...）。"
-    )
+
+    ok, detail = sandbox.probe()
+    if ok:
+        logger.info("在线运行代码：已启用，沙箱正常（%s）", detail)
+    else:
+        logger.warning(
+            "在线运行代码：已启用但沙箱不可用，所有执行请求都会被拒绝。%s", detail
+        )
 
 
 @asynccontextmanager
 async def lifespan(_app: FastAPI):
     _log_model_config()
+    _log_sandbox_status()
     _import_legacy_data_once()
     yield
 
