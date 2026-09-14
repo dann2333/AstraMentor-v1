@@ -375,6 +375,30 @@ jobs:
           sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=1 > /dev/null 2>&1 || true
           echo "::endgroup::"
 
+          # 到这儿唯一还没定性的就是 loopback 那一步。直接跑 bwrap（不经过
+          # probe()），把 --unshare-net 单独摘进摘出，看它是不是唯一的墙。
+          # 只挂一个只读的 / 进去，够跑 /bin/true 就行。
+          bw() {
+            label="$1"; shift
+            out=$(docker run --rm $UNCONF astramentor:smoke \
+                    bwrap "$@" --ro-bind / / --proc /proc --dev /dev /bin/true 2>&1 \
+                  | tail -2 | tr '\n' ' ')
+            if [ -z "$out" ]; then
+              printf '  ✅ %s\n' "$label"
+              echo "| bwrap 直跑：$label | ✅ 可用 |" >> /tmp/perm.md
+            else
+              printf '  ❌ %-44s %s\n' "$label" "$out"
+              echo "| bwrap 直跑：$label | ❌ $(printf '%s' "$out" | cut -c1-140) |" >> /tmp/perm.md
+            fi
+          }
+
+          echo "::group::把 --unshare-net 单独摘出来（apparmor + seccomp 均 unconfined）"
+          bw "只 --unshare-user"                 --unshare-user
+          bw "user + pid + ipc + uts + cgroup"   --unshare-user --unshare-pid --unshare-ipc --unshare-uts --unshare-cgroup
+          bw "再加 --unshare-net"                --unshare-user --unshare-pid --unshare-ipc --unshare-uts --unshare-cgroup --unshare-net
+          bw "--unshare-all（现在用的）"         --unshare-all
+          echo "::endgroup::"
+
           {
             echo "### 沙箱权限探测（${{ matrix.platform }}）"
             echo
