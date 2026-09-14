@@ -63,18 +63,23 @@ services:
 
     security_opt:
       - no-new-privileges:true
-      # 在线 IDE 的 bubblewrap 沙箱要建非特权 user namespace，而 Docker 的
-      # 默认 seccomp 策略挡住了这一步（AppArmor 再挡住后面的 mount）。默认
-      # 配置下沙箱起不来 —— 服务会明确拒绝执行代码、不会裸跑，只是在线 IDE
-      # 用不了。
+      # ── 在线 IDE 的沙箱要用的三项 ───────────────────────────
+      # 沙箱靠内核的非特权 user namespace，而 Docker 的默认策略正好层层
+      # 挡在这条路上：seccomp 挡住建 namespace，AppArmor 挡住 mount，
+      # masked /proc 挡住挂 procfs。默认配置下沙箱起不来 —— 服务会明确
+      # 拒绝执行代码、不会裸跑，只是在线 IDE 用不了。
       #
       # 要用在线 IDE，先跑一句看你这台机器需要哪一档：
       #     bash scripts/check-sandbox.sh
-      # 然后按它的结论去掉下面对应的注释。这两项只放开这一个容器的 LSM
-      # 策略，**不授予任何 capability**（cap_drop: ALL 仍然生效）；实测加
-      # capability 乃至 --privileged 都换不来任何东西，所以别动 cap_drop。
+      # 然后按它的结论去掉下面对应几行的注释。Ubuntu 23.10 起还需要在宿主
+      # 上放开 kernel.apparmor_restrict_unprivileged_userns，脚本会提示。
+      #
+      # 这三项只放开这一个容器的 LSM 约束，**不授予任何 capability**
+      # （cap_drop: ALL 仍然生效）；实测加 capability 乃至 --privileged 都
+      # 换不来任何东西，所以别动 cap_drop。
       # - seccomp=unconfined
       # - apparmor=unconfined
+      # - systempaths=unconfined
     cap_drop:
       - ALL
 

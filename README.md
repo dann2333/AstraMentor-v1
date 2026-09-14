@@ -373,42 +373,55 @@ docker compose pull && docker compose up -d
 
 ### 宿主机策略这一关
 
-不需要 capability，但**需要宿主机和 Docker 允许建立非特权 user namespace**，
-而这一层各家默认值差别很大，只能实测。在 GitHub 的 Ubuntu 24.04 runner 上
-逐档试出来的结果是这样（`cap_drop: ALL` 全程保留）：
+不需要 capability，但**需要宿主机和 Docker 允许建立非特权 user namespace**。
+Docker 的默认策略正好一层层挡在这条路上，各发行版的默认值还不一样，所以这件事
+只能实测。CI 每次构建都会在两个架构上跑一遍这条阶梯，下面是在 GitHub 的
+Ubuntu 24.04 runner 上的结果（`cap_drop: ALL` + 只读根全程保留）：
 
-| 放开的东西 | bwrap 走到哪 |
-| --- | --- |
-| 什么都不放开 | 建不出 user namespace |
-| `apparmor=unconfined` | 同上 |
-| `seccomp=unconfined` | user namespace ✅，`mount / MS_SLAVE` ❌ |
-| `seccomp` + `apparmor` 都 unconfined | mount ✅，给 `lo` 配地址 ❌ |
+| 容器上放开的东西 | 宿主 sysctl = 1（Ubuntu 默认） | 宿主 sysctl = 0 |
+| --- | --- | --- |
+| 什么都不放开 | ❌ 建不出 user namespace | ❌ 同左 |
+| `+ seccomp=unconfined` | ❌ `mount / MS_SLAVE` | ❌ 同左 |
+| `+ apparmor=unconfined` | ❌ `loopback: RTM_NEWADDR` | ❌ `mount proc` |
+| `+ systempaths=unconfined` | ❌ `loopback: RTM_NEWADDR` | **✅ 可用** |
 
-两个可以直接拿走的结论：
+（`sysctl` 指 `kernel.apparmor_restrict_unprivileged_userns`，Ubuntu 23.10 起
+默认为 1；Debian、CentOS 等没有这一项，阶梯往往在更低一档就通过。）
 
-- **capability 完全不是变量。** 加 `NET_ADMIN`、`SYS_ADMIN`，乃至
-  `--privileged`，都停在同一处。所以 `cap_drop: ALL` 该留着，放开它不换来任何
-  东西。
-- **决定能不能建 namespace 的是 Docker 的默认 seccomp**，不是 AppArmor，
-  也不是宿主的 `kernel.apparmor_restrict_unprivileged_userns`（把它置 0 之后
-  照样建不出来）。
+三个可以直接拿走的结论：
 
-在没有 Docker 这层 LSM 策略的普通机器上，同一个 `bwrap --unshare-all` 是正常
-工作的。也就是说沙箱本身没问题，卡住的一直是容器策略——而你那台机器到底卡在
-哪一档，跑一句就知道：
+- **capability 完全不是变量。** 加 `NET_ADMIN`、`SYS_ADMIN`，乃至 `--privileged`，
+  都停在同一处。所以 `cap_drop: ALL` 该留着 —— 放开它换不来任何东西。
+- **每一档挡的是不同的东西**：`seccomp` 决定能不能建 user namespace，
+  `apparmor` 决定能不能 mount，`systempaths` 是 Docker 给 `/proc` 做的
+  masked paths，宿主 sysctl 决定新 namespace 里还剩多少权限。少任何一项都不行。
+- 沙箱起不来的期间，`/api/run-code` 一直是明确拒绝执行，不会裸跑。
+
+#### 要开在线 IDE
+
+先在自己的机器上测一遍，别照抄上面的表（你的发行版可能更松）：
 
 ```bash
 bash scripts/check-sandbox.sh
-# 换本地构建的镜像：bash scripts/check-sandbox.sh astramentor:local
+# 用本地构建的镜像：bash scripts/check-sandbox.sh astramentor:local
 ```
 
-它从"什么都不放开"一直试到"`seccomp` + `apparmor` 都 unconfined"，直接打印出
-最小可用的那一档对应的 `security_opt` 该怎么写。有可用档位就照它改
-`docker-compose.yml`（文件里已经留好注释掉的两行）；一档都不可用，说明这台
-机器上在线 IDE 用不了——那就关掉它，或者换 gVisor（`runsc`）、Kata 这类运行时
-来跑，而不是一路放开到 `--privileged`：那等于拿宿主机换一个功能。
+它从"什么都不放开"一路试到"三项都 unconfined"，直接打印出最小可用的那一档
+对应的 `security_opt` 该怎么写。如果一档都不通，而机器上有
+`kernel.apparmor_restrict_unprivileged_userns` 这一项，放开它再跑一次：
 
-沙箱起不来的期间，`/api/run-code` 一直是明确拒绝执行，不会裸跑。
+```bash
+sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0
+echo 'kernel.apparmor_restrict_unprivileged_userns=0' | sudo tee /etc/sysctl.d/99-astramentor.conf
+```
+
+然后按脚本给的结论去掉 `docker-compose.yml` 里对应几行的注释（文件里已经留好），
+`docker compose up -d` 即可。
+
+这些 flag 放开的是**外层容器**的 LSM 约束，换来的是提交上来的代码被关进内层
+沙箱 —— 值不值得自己判断。还是不通，说明这台机器上在线 IDE 用不了：要么关掉
+它，要么换 gVisor（`runsc`）、Kata 这类运行时来跑，而不是一路放开到
+`--privileged`（那等于拿宿主机换一个功能）。
 
 不需要这个功能就整个关掉：
 
@@ -421,9 +434,12 @@ docker compose up -d
 两个架构上真跑一遍：读 `/data`、读 `/app`、拿 API Key、联网、DNS、写沙箱
 根目录——逐条确认都被挡住，同时确认正常代码和六种语言都还能跑。
 
-> CI 里这一轮同时覆盖了两种结局：沙箱能用时逐条确认隔离成立；宿主机策略
-> 不允许非特权 user namespace 时，确认服务**什么都没执行**。判红的只有第三
-> 种情形 —— 代码跑起来了但隔离没生效。
+> CI 里一共三轮，两个架构各跑一遍：默认配置和 compose 的加固配置下，确认
+> "要么隔离成立、要么什么都没执行"；最后一轮切到上面那套实测出来的可用配置，
+> 在沙箱真的起来的前提下逐条验证隔离（读 /data、列 /app、读上传目录、TCP、
+> DNS、写沙箱根、写 /usr、拿 ASTRA_* 环境变量、死循环、超长输出），并确认
+> 六种语言都还能跑出正确结果。这一轮沙箱起不来就判红 —— 它是唯一能真正验证
+> 隔离的配置。
 
 ---
 
