@@ -1,13 +1,13 @@
 # AstraMentor - Frontend
 
-This is the frontend module for AstraMentor, an AI-driven interactive knowledge graph teaching system. It is built with React, TypeScript, and Vite.
+Frontend module for AstraMentor, an AI-driven interactive knowledge graph teaching system. Built with React, TypeScript, and Vite.
 
 ## Tech Stack
 
 - **Framework**: React 19 + TypeScript
 - **Styling**: Tailwind CSS v4
 - **Graph Visualization**: AntV G6 (2D/3D Force-Directed Graphs)
-- **Editor**: Monaco Editor for an online interactive IDE experience
+- **Editor**: Monaco Editor
 - **UI Components**: Radix UI primitives, Lucide React icons, custom SteppedSlider
 - **Markdown Rendering**: react-markdown & react-syntax-highlighter
 - **Internationalization**: Built-in i18n with Chinese/English support
@@ -36,4 +36,4 @@ This is the frontend module for AstraMentor, an AI-driven interactive knowledge 
 - **Online IDE**: Monaco Editor with multi-language code execution
 - **History Sidebar**: Session management with graph persistence
 
-For complete project details, please check the [Root README](../README.md).
+See the [Root README](../README.md) for full project details.
