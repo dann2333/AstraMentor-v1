@@ -14,12 +14,14 @@
 应用装在同一个镜像里，不用起第二个容器、不用挂 docker socket（挂 socket
 等于把宿主机 root 交出去）、也不用 --privileged。
 
-代价是它依赖宿主机允许非特权 user namespace，而这在新发行版上默认是关的
-（Ubuntu 23.10 起 kernel.apparmor_restrict_unprivileged_userns=1，Docker 的
-docker-default 这个 AppArmor 配置下 bwrap 会报 "No permissions to create new
-namespace"）。那种环境下 probe() 会返回不可用，调用方必须拒绝执行；要启用
-得给这一个容器加 --security-opt apparmor=unconfined（仍然不授予 capability），
-见 README「宿主机策略这一关」。
+代价是它依赖"能建出非特权 user namespace"，而 Docker 的默认 seccomp 策略正好
+挡住这一步（bwrap 报 "No permissions to create new namespace"），AppArmor 的
+docker-default 再挡住后面的 mount。实测下来 capability 不是变量 —— 加
+NET_ADMIN / SYS_ADMIN 乃至 --privileged 都一样，所以 cap_drop: ALL 可以留着；
+真正分档的是 seccomp 和 apparmor 这两项。哪一档够用取决于宿主内核和发行版，
+只能实测：scripts/check-sandbox.sh 会逐档跑一遍并给出结论。
+
+起不来时 probe() 返回不可用，调用方必须拒绝执行 —— 见下面「失败就拒绝」。
 
 隔离掉的东西：
 
@@ -208,10 +210,10 @@ def probe() -> tuple[bool, str]:
     hint = detail[-1] if detail else f"退出码 {done.returncode}"
     return False, (
         f"bubblewrap 无法建立命名空间：{hint}。"
-        "最常见的原因是宿主机禁止了非特权 user namespace —— Ubuntu 23.10 起"
-        "默认如此（kernel.apparmor_restrict_unprivileged_userns=1）。"
-        "容器部署时给这一个容器加 --security-opt apparmor=unconfined 即可，"
-        "不需要任何 capability；详见 README「宿主机策略这一关」。"
+        "在 Docker 里最常见的原因是默认的 seccomp / AppArmor 策略挡住了"
+        "建立非特权 user namespace。跑 scripts/check-sandbox.sh 能测出这台"
+        "机器最少需要放开哪一项（不需要任何 capability）；"
+        "详见 README「宿主机策略这一关」。"
     )
 
 

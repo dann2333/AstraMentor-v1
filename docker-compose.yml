@@ -63,15 +63,17 @@ services:
 
     security_opt:
       - no-new-privileges:true
-      # 在线 IDE 的 bubblewrap 沙箱要建非特权 user namespace，而 Ubuntu
-      # 23.10 起宿主机默认禁止了它（kernel.apparmor_restrict_unprivileged_userns=1），
-      # 容器里就会看到 "bwrap: No permissions to create new namespace"。
-      # 这时服务会明确拒绝执行代码，不会裸跑，只是在线 IDE 用不了。
+      # 在线 IDE 的 bubblewrap 沙箱要建非特权 user namespace，而 Docker 的
+      # 默认 seccomp 策略挡住了这一步（AppArmor 再挡住后面的 mount）。默认
+      # 配置下沙箱起不来 —— 服务会明确拒绝执行代码、不会裸跑，只是在线 IDE
+      # 用不了。
       #
-      # 想用在线 IDE 就把下面这行的注释去掉。它只放开这一个容器的 AppArmor
-      # 限制，**不授予任何 capability**（cap_drop: ALL 仍然生效），比在宿主机
-      # 上全局 sysctl 影响面小。不需要在线 IDE 的话别动，设
-      # ASTRA_CODE_RUNNER_ENABLED=false 更干脆。
+      # 要用在线 IDE，先跑一句看你这台机器需要哪一档：
+      #     bash scripts/check-sandbox.sh
+      # 然后按它的结论去掉下面对应的注释。这两项只放开这一个容器的 LSM
+      # 策略，**不授予任何 capability**（cap_drop: ALL 仍然生效）；实测加
+      # capability 乃至 --privileged 都换不来任何东西，所以别动 cap_drop。
+      # - seccomp=unconfined
       # - apparmor=unconfined
     cap_drop:
       - ALL

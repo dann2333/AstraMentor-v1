@@ -311,59 +311,57 @@ jobs:
           set +e
           set -u
 
-          echo "宿主对非特权 user namespace 的设置："
-          for key in kernel.unprivileged_userns_clone kernel.apparmor_restrict_unprivileged_userns; do
-            printf '  %s = %s\n' "$key" "$(sysctl -n "$key" 2>/dev/null || echo '未设置')"
-          done
-
           # 直接调 services/sandbox.py 的 probe()，和线上判断沙箱可用性
           # 走的是同一段代码，不另写一套。
           PROBE_PY='from services.sandbox import probe; ok, detail = probe(); print(("OK" if ok else "FAIL") + " " + detail)'
 
-          # 两个维度交叉：LSM 策略（apparmor / seccomp）和 capability。
-          # 实测下来 capability 完全不是变量 —— NET_ADMIN、SYS_ADMIN、乃至
-          # --privileged 都停在同一处，所以 compose 里的 cap_drop: ALL 可以留
-          # 着。真正分档的是 seccomp（决定能不能建 userns）和 apparmor
-          # （决定能不能 mount）。留着这几格是为了在别的宿主上也能一眼看出
-          # 哪一项卡住了。
+          # 基线固定为 docker-compose.yml 里那套加固参数，这样结论可以直接
+          # 抄进 compose。capability 已经实测过完全不是变量（NET_ADMIN、
+          # SYS_ADMIN、乃至 --privileged 都停在同一处），所以 cap_drop: ALL
+          # 全程保留，只沿着 LSM 策略这条线一档一档往上放。
           HARD="--read-only --tmpfs /tmp:size=64m,mode=1777 --cap-drop ALL --security-opt no-new-privileges:true"
-          UNCONF="--security-opt apparmor=unconfined --security-opt seccomp=unconfined"
+          S=" --security-opt seccomp=unconfined"
+          A=" --security-opt apparmor=unconfined"
+          P=" --security-opt systempaths=unconfined"
 
           : > /tmp/perm.md
           try() {
             label="$1"; shift
             flags="$1"
             # shellcheck disable=SC2086 - flags 需要被拆成多个参数
-            out=$(docker run --rm -w /app $flags astramentor:smoke python -c "$PROBE_PY" 2>&1)
+            out=$(docker run --rm -w /app $HARD $flags astramentor:smoke python -c "$PROBE_PY" 2>&1)
             out=$(printf '%s' "$out" | tail -3 | tr '\n' ' ')
-            # 只保留 bwrap 自己那句，后面那段中文提示每行都一样，没有信息量
-            brief=$(printf '%s' "$out" | sed 's/。最常见的原因.*//')
+            # 只留 bwrap 自己那句，后面那段中文提示每行都一样，没有信息量
+            brief=$(printf '%s' "$out" | sed 's/。在 Docker 里最常见.*//; s/^FAIL //')
             case "$out" in
               OK*) printf '  ✅ %s\n' "$label"
                    echo "| $label | ✅ 可用 |" >> /tmp/perm.md ;;
-              *)   printf '  ❌ %-42s %s\n' "$label" "$brief"
-                   echo "| $label | ❌ $(printf '%s' "$brief" | cut -c1-140) |" >> /tmp/perm.md ;;
+              *)   printf '  ❌ %-46s %s\n' "$label" "$brief"
+                   echo "| $label | ❌ $(printf '%s' "$brief" | cut -c1-120) |" >> /tmp/perm.md ;;
             esac
           }
 
-          echo "::group::逐个组合实测"
-          try "不加任何 flag（docker run 默认）"          ""
-          try "默认 caps + apparmor=unconfined"           "--security-opt apparmor=unconfined"
-          try "默认 caps + seccomp=unconfined"            "--security-opt seccomp=unconfined"
-          try "默认 caps + apparmor + seccomp"            "$UNCONF"
-          try "compose 那套加固（cap_drop ALL）"          "$HARD"
-          try "加固 + apparmor + seccomp"                 "$HARD $UNCONF"
-          try "加固 + apparmor + seccomp + NET_ADMIN"     "$HARD $UNCONF --cap-add NET_ADMIN"
-          try "加固 + apparmor + seccomp + SYS_ADMIN + NET_ADMIN" \
-                                                          "$HARD $UNCONF --cap-add SYS_ADMIN --cap-add NET_ADMIN"
-          try "--privileged（仅作对照，不要照抄）"        "--privileged"
+          # 一档一档往上放。每多放一项，bwrap 就往后走一步：
+          #   什么都不放   建不出 user namespace（Docker 默认 seccomp 挡的）
+          #   + seccomp    namespace 建出来了，卡在 mount / MS_SLAVE
+          #   + apparmor   mount 过了，卡在给 lo 配地址
+          #   + systempaths  Docker 给 /proc 做的 masked paths
+          ladder() {
+            try "什么都不额外放开"                        ""
+            try "+ seccomp"                               "$S"
+            try "+ seccomp + apparmor"                    "$S$A"
+            try "+ seccomp + apparmor + systempaths"      "$S$A$P"
+          }
+
+          echo "::group::宿主 sysctl 原样（$(sysctl -n kernel.apparmor_restrict_unprivileged_userns 2>/dev/null || echo '该项不存在')）"
+          echo "| **宿主 sysctl 原样** | |" >> /tmp/perm.md
+          ladder
           echo "::endgroup::"
 
-          # 上面九种组合里 capability 完全不是变量（NET_ADMIN、SYS_ADMIN、
-          # 连 --privileged 都停在同一处），说明墙不在容器这一层，而在宿主的
-          # kernel.apparmor_restrict_unprivileged_userns 上。runner 有 sudo，
-          # 直接把它关掉再试一遍，看结论是否就是"这一项决定一切"。
-          echo "::group::把宿主 sysctl 放开后再试"
+          # Ubuntu 23.10 起 kernel.apparmor_restrict_unprivileged_userns 默认为 1。
+          # runner 上有 sudo，所以把它置 0 再把同一条阶梯跑一遍，好分清"要改宿主"
+          # 和"改容器就够"这两种情形。
+          echo "::group::把宿主 sysctl 置 0 之后"
           for key in kernel.apparmor_restrict_unprivileged_userns \
                      kernel.apparmor_restrict_unprivileged_unconfined; do
             before=$(sysctl -n "$key" 2>/dev/null || echo '不存在')
@@ -371,52 +369,21 @@ jobs:
               && printf '  已置 0: %s（原值 %s）\n' "$key" "$before" \
               || printf '  改不动: %s（原值 %s）\n' "$key" "$before"
           done
-
-          echo "| **以下为放开宿主 sysctl 之后** | |" >> /tmp/perm.md
-          try "sysctl 放开 + compose 那套加固"      "$HARD"
-          try "sysctl 放开 + 不加任何 flag"          ""
-          try "sysctl 放开 + 加固 + apparmor"        "$HARD --security-opt apparmor=unconfined"
-          try "sysctl 放开 + 加固 + apparmor + seccomp" "$HARD $UNCONF"
-
-          # 还原，免得影响后面的步骤
+          echo "| **宿主 sysctl 置 0 之后** | |" >> /tmp/perm.md
+          ladder
           sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=1 > /dev/null 2>&1 || true
-          echo "::endgroup::"
-
-          # 到这儿唯一还没定性的就是 loopback 那一步。直接跑 bwrap（不经过
-          # probe()），把 --unshare-net 单独摘进摘出，看它是不是唯一的墙。
-          # 只挂一个只读的 / 进去，够跑 /bin/true 就行。
-          bw() {
-            label="$1"; shift
-            out=$(docker run --rm $UNCONF astramentor:smoke \
-                    bwrap "$@" --ro-bind / / --proc /proc --dev /dev /bin/true 2>&1)
-            rc=$?
-            out=$(printf '%s' "$out" | tail -2 | tr '\n' ' ')
-            if [ "$rc" = 0 ]; then
-              printf '  ✅ %s\n' "$label"
-              echo "| bwrap 直跑：$label | ✅ 可用 |" >> /tmp/perm.md
-            else
-              printf '  ❌ %-44s %s\n' "$label" "$out"
-              echo "| bwrap 直跑：$label | ❌ $(printf '%s' "$out" | cut -c1-140) |" >> /tmp/perm.md
-            fi
-          }
-
-          echo "::group::把 --unshare-net 单独摘出来（apparmor + seccomp 均 unconfined）"
-          bw "只 --unshare-user"                 --unshare-user
-          bw "user + pid + ipc + uts + cgroup"   --unshare-user --unshare-pid --unshare-ipc --unshare-uts --unshare-cgroup
-          bw "再加 --unshare-net"                --unshare-user --unshare-pid --unshare-ipc --unshare-uts --unshare-cgroup --unshare-net
-          bw "--unshare-all（现在用的）"         --unshare-all
           echo "::endgroup::"
 
           {
             echo "### 沙箱权限探测（${{ matrix.platform }}）"
             echo
-            echo "宿主 \`kernel.apparmor_restrict_unprivileged_userns\` = $(sysctl -n kernel.apparmor_restrict_unprivileged_userns 2>/dev/null || echo '未设置')"
+            echo "基线：\`$HARD\`（capability 已实测与结果无关，故全程 cap_drop ALL）"
             echo
-            echo "| 组合 | bubblewrap 能否建立命名空间 |"
+            echo "| 组合 | bubblewrap |"
             echo "| --- | --- |"
             cat /tmp/perm.md
             echo
-            echo "取上表中**最靠前的 ✅**作为部署建议；全是 ❌ 说明这台宿主只能关掉在线 IDE（\`ASTRA_CODE_RUNNER_ENABLED=false\`）。"
+            echo "取最靠前的 ✅ 作为部署建议。全是 ❌ 说明这台宿主只能关掉在线 IDE（\`ASTRA_CODE_RUNNER_ENABLED=false\`），或者换 gVisor / Kata 这类运行时。"
           } >> "$GITHUB_STEP_SUMMARY"
 
       - name: 收尾

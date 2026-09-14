@@ -62,13 +62,15 @@ check "什么都不额外放开" \
 check "seccomp=unconfined" \
       "--security-opt seccomp=unconfined" \
       "      - seccomp=unconfined"
-check "apparmor=unconfined" \
-      "--security-opt apparmor=unconfined" \
-      "      - apparmor=unconfined"
 check "seccomp=unconfined + apparmor=unconfined" \
       "--security-opt seccomp=unconfined --security-opt apparmor=unconfined" \
       "      - seccomp=unconfined
       - apparmor=unconfined"
+check "seccomp + apparmor + systempaths 都 unconfined" \
+      "--security-opt seccomp=unconfined --security-opt apparmor=unconfined --security-opt systempaths=unconfined" \
+      "      - seccomp=unconfined
+      - apparmor=unconfined
+      - systempaths=unconfined"
 echo
 
 if [ -n "$WINNER" ]; then
@@ -89,6 +91,12 @@ if [ -n "$WINNER" ]; then
 else
   cat <<'EOF'
 结论：这台机器上沙箱起不来。
+
+如果上面 kernel.apparmor_restrict_unprivileged_userns 显示为 1（Ubuntu 23.10
+起的默认值），可以先试试把它放开再重跑本脚本 —— 这一项影响整台机器上所有
+程序，影响面比容器 flag 大，自己权衡：
+
+    sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0
 
 服务不会因此裸跑 —— /api/run-code 会直接拒绝执行并在日志里说明原因，
 在线 IDE 相当于不可用。两个选择：

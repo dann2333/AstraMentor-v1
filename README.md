@@ -373,29 +373,42 @@ docker compose pull && docker compose up -d
 
 ### 宿主机策略这一关
 
-不需要 capability，但**需要宿主机允许非特权 user namespace**，而这一点在新
-发行版上默认是关着的：Ubuntu 23.10 起 `kernel.apparmor_restrict_unprivileged_userns=1`，
-于是容器里 `bwrap` 会直接报
+不需要 capability，但**需要宿主机和 Docker 允许建立非特权 user namespace**，
+而这一层各家默认值差别很大，只能实测。在 GitHub 的 Ubuntu 24.04 runner 上
+逐档试出来的结果是这样（`cap_drop: ALL` 全程保留）：
 
-```
-bwrap: No permissions to create new namespace, likely because the kernel
-does not allow non-privileged user namespaces
-```
+| 放开的东西 | bwrap 走到哪 |
+| --- | --- |
+| 什么都不放开 | 建不出 user namespace |
+| `apparmor=unconfined` | 同上 |
+| `seccomp=unconfined` | user namespace ✅，`mount / MS_SLAVE` ❌ |
+| `seccomp` + `apparmor` 都 unconfined | mount ✅，给 `lo` 配地址 ❌ |
 
-这种情况下服务会拒绝执行代码（日志里写明原因），在线 IDE 用不了，但不会裸跑。
-两条路可选，**按影响面从小到大**：
+两个可以直接拿走的结论：
+
+- **capability 完全不是变量。** 加 `NET_ADMIN`、`SYS_ADMIN`，乃至
+  `--privileged`，都停在同一处。所以 `cap_drop: ALL` 该留着，放开它不换来任何
+  东西。
+- **决定能不能建 namespace 的是 Docker 的默认 seccomp**，不是 AppArmor，
+  也不是宿主的 `kernel.apparmor_restrict_unprivileged_userns`（把它置 0 之后
+  照样建不出来）。
+
+在没有 Docker 这层 LSM 策略的普通机器上，同一个 `bwrap --unshare-all` 是正常
+工作的。也就是说沙箱本身没问题，卡住的一直是容器策略——而你那台机器到底卡在
+哪一档，跑一句就知道：
 
 ```bash
-# A. 只放开这一个容器的 AppArmor 限制（不授予任何 capability，推荐）
-#    docker-compose.yml 里把 security_opt 那一段的注释去掉即可
-docker run --security-opt apparmor=unconfined ...
-
-# B. 在宿主机上打开这个内核开关（影响整台机器上所有程序）
-sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0
+bash scripts/check-sandbox.sh
+# 换本地构建的镜像：bash scripts/check-sandbox.sh astramentor:local
 ```
 
-哪个组合在当前架构上真的有效，由 CI 的「探明沙箱需要的最小权限」一步实测后
-写进作业摘要，不靠推断。完全不需要在线 IDE 的话，最省事的是直接关掉它。
+它从"什么都不放开"一直试到"`seccomp` + `apparmor` 都 unconfined"，直接打印出
+最小可用的那一档对应的 `security_opt` 该怎么写。有可用档位就照它改
+`docker-compose.yml`（文件里已经留好注释掉的两行）；一档都不可用，说明这台
+机器上在线 IDE 用不了——那就关掉它，或者换 gVisor（`runsc`）、Kata 这类运行时
+来跑，而不是一路放开到 `--privileged`：那等于拿宿主机换一个功能。
+
+沙箱起不来的期间，`/api/run-code` 一直是明确拒绝执行，不会裸跑。
 
 不需要这个功能就整个关掉：
 
